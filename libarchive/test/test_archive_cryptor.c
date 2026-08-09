@@ -20,6 +20,7 @@
 
 #define __LIBARCHIVE_BUILD 1
 #include "archive_cryptor_private.h"
+#include "archive_hmac_private.h"
 
 DEFINE_TEST(test_archive_cryptor_secure_zero)
 {
@@ -171,5 +172,36 @@ DEFINE_TEST(test_archive_cryptor_pbkdf2_sha256)
 	}
 	assertEqualInt(0, result);
 	assertEqualMem(expected, actual, sizeof(expected));
+	__archive_cryptor_secure_zero(actual, sizeof(actual));
+}
+
+DEFINE_TEST(test_archive_cryptor_hmac_sha256)
+{
+	static const unsigned char key[20] = {
+		0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
+		0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
+		0x0b, 0x0b, 0x0b, 0x0b
+	};
+	static const unsigned char expected[32] = {
+		0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53,
+		0x5c, 0xa8, 0xaf, 0xce, 0xaf, 0x0b, 0xf1, 0x2b,
+		0x88, 0x1d, 0xc2, 0x00, 0xc9, 0x83, 0x3d, 0xa7,
+		0x26, 0xe9, 0x37, 0x6c, 0x2e, 0x32, 0xcf, 0xf7
+	};
+	static const unsigned char data[] = "Hi There";
+	archive_hmac_sha256_ctx ctx;
+	unsigned char actual[sizeof(expected)];
+	size_t actual_len = sizeof(actual);
+
+	if (archive_hmac_sha256_init(&ctx, key, sizeof(key)) != 0) {
+		skipping("This platform does not support HMAC-SHA256");
+		return;
+	}
+	archive_hmac_sha256_update(&ctx, data, 2);
+	archive_hmac_sha256_update(&ctx, data + 2, sizeof(data) - 3);
+	archive_hmac_sha256_final(&ctx, actual, &actual_len);
+	assertEqualInt(sizeof(expected), actual_len);
+	assertEqualMem(expected, actual, sizeof(expected));
+	archive_hmac_sha256_cleanup(&ctx);
 	__archive_cryptor_secure_zero(actual, sizeof(actual));
 }
