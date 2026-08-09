@@ -21,6 +21,7 @@
 #define __LIBARCHIVE_BUILD 1
 #include "archive_7zip_crypto_private.h"
 #include "archive_cryptor_private.h"
+#include "archive_digest_private.h"
 #include "archive_hmac_private.h"
 #include "archive_rar_crypto_private.h"
 
@@ -201,6 +202,37 @@ DEFINE_TEST(test_archive_cryptor_constant_time_equal)
 
 	assertEqualInt(1, __archive_cryptor_constant_time_equal(
 	    value, different, 0));
+}
+
+DEFINE_TEST(test_archive_sha1_clone)
+{
+	static const unsigned char expected_abc[20] = {
+		0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a,
+		0xba, 0x3e, 0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c,
+		0x9c, 0xd0, 0xd8, 0x9d
+	};
+	static const unsigned char expected_abd[20] = {
+		0xcb, 0x4c, 0xc2, 0x8d, 0xf0, 0xfd, 0xbe, 0x0e,
+		0xcf, 0x9d, 0x96, 0x62, 0xe2, 0x94, 0xb1, 0x18,
+		0x09, 0x2a, 0x57, 0x35
+	};
+	archive_sha1_ctx original, copy;
+	unsigned char digest[20];
+
+	assertEqualInt(ARCHIVE_OK, archive_sha1_init(&original));
+	assertEqualInt(ARCHIVE_OK, archive_sha1_update(&original, "ab", 2));
+	if (archive_sha1_clone(&copy, &original) != ARCHIVE_OK) {
+		assertEqualInt(ARCHIVE_OK, archive_sha1_final(&original, digest));
+		skipping("This platform cannot clone SHA-1 contexts");
+		return;
+	}
+	assertEqualInt(ARCHIVE_OK, archive_sha1_update(&original, "c", 1));
+	assertEqualInt(ARCHIVE_OK, archive_sha1_final(&original, digest));
+	assertEqualMem(expected_abc, digest, sizeof(digest));
+	assertEqualInt(ARCHIVE_OK, archive_sha1_update(&copy, "d", 1));
+	assertEqualInt(ARCHIVE_OK, archive_sha1_final(&copy, digest));
+	assertEqualMem(expected_abd, digest, sizeof(digest));
+	__archive_cryptor_secure_zero(digest, sizeof(digest));
 }
 
 static void
