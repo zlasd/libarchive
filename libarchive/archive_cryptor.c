@@ -543,6 +543,144 @@ aes_ctr_update(archive_crypto_ctx *ctx, const uint8_t * const in,
 }
 #endif /* ARCHIVE_CRYPTOR_STUB */
 
+#ifdef ARCHIVE_CRYPTOR_USE_Apple_CommonCrypto
+
+static int
+aes_cbc_decrypt_init(archive_crypto_ctx *ctx, const uint8_t *key,
+    size_t key_len, const uint8_t *iv)
+{
+	CCCryptorStatus status;
+
+	if (key_len != kCCKeySizeAES128 && key_len != kCCKeySizeAES256)
+		return -1;
+	memset(ctx, 0, sizeof(*ctx));
+	status = CCCryptorCreate(kCCDecrypt, kCCAlgorithmAES, 0, key, key_len,
+	    iv, &ctx->ctx);
+	if (status != kCCSuccess) {
+		__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
+		return -1;
+	}
+	memcpy(ctx->key, key, key_len);
+	ctx->key_len = key_len;
+	memcpy(ctx->nonce, iv, AES_BLOCK_SIZE);
+	return 0;
+}
+
+static int
+aes_cbc_decrypt_update(archive_crypto_ctx *ctx, const uint8_t *in,
+    size_t in_len, uint8_t *out, size_t *out_len)
+{
+	CCCryptorStatus status;
+	size_t required, written = 0;
+
+	required = CCCryptorGetOutputLength(ctx->ctx, in_len, false);
+	if (required > *out_len)
+		return -1;
+	status = CCCryptorUpdate(ctx->ctx, in, in_len, out, *out_len, &written);
+	if (status != kCCSuccess)
+		return -1;
+	*out_len = written;
+	return 0;
+}
+
+static int
+aes_cbc_decrypt_release(archive_crypto_ctx *ctx)
+{
+	if (ctx->ctx != NULL)
+		CCCryptorRelease(ctx->ctx);
+	__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
+	return 0;
+}
+
+#elif defined(ARCHIVE_CRYPTOR_USE_OPENSSL)
+
+static int
+aes_cbc_decrypt_init(archive_crypto_ctx *ctx, const uint8_t *key,
+    size_t key_len, const uint8_t *iv)
+{
+	const EVP_CIPHER *type;
+
+	if (key_len == 16)
+		type = EVP_aes_128_cbc();
+	else if (key_len == 32)
+		type = EVP_aes_256_cbc();
+	else
+		return -1;
+
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->ctx = EVP_CIPHER_CTX_new();
+	if (ctx->ctx == NULL)
+		return -1;
+	if (EVP_DecryptInit_ex(ctx->ctx, type, NULL, key, iv) != 1 ||
+	    EVP_CIPHER_CTX_set_padding(ctx->ctx, 0) != 1) {
+		EVP_CIPHER_CTX_free(ctx->ctx);
+		__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
+		return -1;
+	}
+	ctx->type = type;
+	memcpy(ctx->key, key, key_len);
+	ctx->key_len = (unsigned)key_len;
+	memcpy(ctx->nonce, iv, AES_BLOCK_SIZE);
+	return 0;
+}
+
+static int
+aes_cbc_decrypt_update(archive_crypto_ctx *ctx, const uint8_t *in,
+    size_t in_len, uint8_t *out, size_t *out_len)
+{
+	int written;
+
+	if (in_len > INT_MAX || in_len > SIZE_MAX - AES_BLOCK_SIZE ||
+	    *out_len < in_len + AES_BLOCK_SIZE)
+		return -1;
+	if (EVP_DecryptUpdate(ctx->ctx, out, &written, in, (int)in_len) != 1)
+		return -1;
+	*out_len = (size_t)written;
+	return 0;
+}
+
+static int
+aes_cbc_decrypt_release(archive_crypto_ctx *ctx)
+{
+	EVP_CIPHER_CTX_free(ctx->ctx);
+	__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
+	return 0;
+}
+
+#else
+
+static int
+aes_cbc_decrypt_init(archive_crypto_ctx *ctx, const uint8_t *key,
+    size_t key_len, const uint8_t *iv)
+{
+	(void)ctx;
+	(void)key;
+	(void)key_len;
+	(void)iv;
+	return CRYPTOR_STUB_FUNCTION;
+}
+
+static int
+aes_cbc_decrypt_update(archive_crypto_ctx *ctx, const uint8_t *in,
+    size_t in_len, uint8_t *out, size_t *out_len)
+{
+	(void)ctx;
+	(void)in;
+	(void)in_len;
+	(void)out;
+	(void)out_len;
+	return CRYPTOR_STUB_FUNCTION;
+}
+
+static int
+aes_cbc_decrypt_release(archive_crypto_ctx *ctx)
+{
+	(void)ctx;
+	return CRYPTOR_STUB_FUNCTION;
+}
+
+#endif
+
 
 const struct archive_cryptor __archive_cryptor =
 {
@@ -550,6 +688,9 @@ const struct archive_cryptor __archive_cryptor =
   &aes_ctr_init,
   &aes_ctr_update,
   &aes_ctr_release,
+  &aes_cbc_decrypt_init,
+  &aes_cbc_decrypt_update,
+  &aes_cbc_decrypt_release,
   &aes_ctr_init,
   &aes_ctr_update,
   &aes_ctr_release,

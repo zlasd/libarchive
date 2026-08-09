@@ -169,6 +169,13 @@ typedef int archive_crypto_ctx;
 #define archive_decrypto_aes_ctr_release(ctx) \
   __archive_cryptor.decrypto_aes_ctr_release(ctx)
 
+#define archive_decrypto_aes_cbc_init(ctx, key, key_len, iv) \
+  __archive_cryptor.decrypto_aes_cbc_init(ctx, key, key_len, iv)
+#define archive_decrypto_aes_cbc_update(ctx, in, in_len, out, out_len) \
+  __archive_cryptor.decrypto_aes_cbc_update(ctx, in, in_len, out, out_len)
+#define archive_decrypto_aes_cbc_release(ctx) \
+  __archive_cryptor.decrypto_aes_cbc_release(ctx)
+
 #define archive_encrypto_aes_ctr_init(ctx, key, key_len) \
   __archive_cryptor.encrypto_aes_ctr_init(ctx, key, key_len)
 #define archive_encrypto_aes_ctr_update(ctx, in, in_len, out, out_len) \
@@ -192,6 +199,12 @@ struct archive_cryptor
   int (*decrypto_aes_ctr_update)(archive_crypto_ctx *, const uint8_t *,
     size_t, uint8_t *, size_t *);
   int (*decrypto_aes_ctr_release)(archive_crypto_ctx *);
+  /* AES CBC decrypt without padding. */
+  int (*decrypto_aes_cbc_init)(archive_crypto_ctx *, const uint8_t *,
+    size_t, const uint8_t *);
+  int (*decrypto_aes_cbc_update)(archive_crypto_ctx *, const uint8_t *,
+    size_t, uint8_t *, size_t *);
+  int (*decrypto_aes_cbc_release)(archive_crypto_ctx *);
   int (*encrypto_aes_ctr_init)(archive_crypto_ctx *, const uint8_t *, size_t);
   int (*encrypto_aes_ctr_update)(archive_crypto_ctx *, const uint8_t *,
     size_t, uint8_t *, size_t *);
