@@ -33,7 +33,8 @@
  *
  * For all files the file contents is "This is from <filename>" (i.e. "This is from a.txt" etc.)
  */
-static void test_encrypted_rar_archive(const char *filename, int filenamesEncrypted, int solid)
+static void test_encrypted_rar_archive(const char *filename,
+    int filenamesEncrypted, int solid, int decryptionSupported)
 {
 	struct archive_entry *ae;
 	struct archive *a;
@@ -43,16 +44,21 @@ static void test_encrypted_rar_archive(const char *filename, int filenamesEncryp
 
 	/* We should only ever fail to read the header when filenames are encrypted. Otherwise we're failing for other
 	 * unsupported reasons, in which case we have no hope of detecting encryption */
-	expected_read_header_result = filenamesEncrypted ? ARCHIVE_FATAL : ARCHIVE_OK;
+	expected_read_header_result = filenamesEncrypted && !decryptionSupported ?
+	    ARCHIVE_FATAL : ARCHIVE_OK;
 
 	/* We should only ever fail to read the data for "a.txt" and "c.txt" if they are encrypted */
 	/* NOTE: We'll never attempt this when filenames are encrypted, so we only check for solid here */
-	expected_read_data_result = solid ? ARCHIVE_FAILED : expected_file_size;
+	expected_read_data_result = solid && !decryptionSupported ? ARCHIVE_FAILED :
+	    expected_file_size;
 
 	extract_reference_file(filename);
 	assert((a = archive_read_new()) != NULL);
 	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_filter_all(a));
 	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_all(a));
+	if (decryptionSupported)
+		assertEqualIntA(a, ARCHIVE_OK,
+		    archive_read_add_passphrase(a, "password"));
 	assertEqualIntA(a, ARCHIVE_OK, archive_read_open_filename(a, filename, 10240));
 
 	/* No data read yet; encryption unknown */
@@ -60,17 +66,20 @@ static void test_encrypted_rar_archive(const char *filename, int filenamesEncryp
 
 	/* Read the header for "a.txt" */
 	assertEqualIntA(a, expected_read_header_result, archive_read_next_header(a, &ae));
-	if (!filenamesEncrypted) {
+	if (!filenamesEncrypted || decryptionSupported) {
 		assertEqualInt((AE_IFREG | 0644), archive_entry_mode(ae));
 		assertEqualString("a.txt", archive_entry_pathname(ae));
 		assertEqualInt(expected_file_size, archive_entry_size(ae));
-		assertEqualInt(solid, archive_entry_is_data_encrypted(ae));
-		assertEqualInt(0, archive_entry_is_metadata_encrypted(ae));
+		assertEqualInt(solid || filenamesEncrypted,
+		    archive_entry_is_data_encrypted(ae));
+		assertEqualInt(filenamesEncrypted,
+		    archive_entry_is_metadata_encrypted(ae));
 		/* NOTE: The reader will set this value to zero on the first header that it reads, even if later entries
 		 * are encrypted */
-		assertEqualInt(solid, archive_read_has_encrypted_entries(a));
+		assertEqualInt(solid || filenamesEncrypted,
+		    archive_read_has_encrypted_entries(a));
 		assertEqualIntA(a, expected_read_data_result, archive_read_data(a, buff, sizeof(buff)));
-		if (!solid) {
+		if (!solid || decryptionSupported) {
 			assertEqualMem("This is from a.txt", buff, expected_file_size);
 		}
 	}
@@ -94,21 +103,27 @@ static void test_encrypted_rar_archive(const char *filename, int filenamesEncryp
 	assertEqualString("b.txt", archive_entry_pathname(ae));
 	assertEqualInt(expected_file_size, archive_entry_size(ae));
 	assertEqualInt(1, archive_entry_is_data_encrypted(ae));
-	assertEqualInt(0, archive_entry_is_metadata_encrypted(ae));
+	assertEqualInt(filenamesEncrypted,
+	    archive_entry_is_metadata_encrypted(ae));
 	assertEqualInt(1, archive_read_has_encrypted_entries(a));
-	assertEqualIntA(a, ARCHIVE_FAILED, archive_read_data(a, buff, sizeof(buff)));
+	assertEqualIntA(a, decryptionSupported ? expected_file_size :
+	    ARCHIVE_FAILED, archive_read_data(a, buff, sizeof(buff)));
+	if (decryptionSupported)
+		assertEqualMem("This is from b.txt", buff, expected_file_size);
 
 	/* Read the header for "c.txt" */
 	assertEqualIntA(a, ARCHIVE_OK, archive_read_next_header(a, &ae));
 	assertEqualInt((AE_IFREG | 0644), archive_entry_mode(ae));
 	assertEqualString("c.txt", archive_entry_pathname(ae));
 	assertEqualInt(expected_file_size, archive_entry_size(ae));
-	assertEqualInt(solid, archive_entry_is_data_encrypted(ae));
-	assertEqualInt(0, archive_entry_is_metadata_encrypted(ae));
+	assertEqualInt(solid || filenamesEncrypted,
+	    archive_entry_is_data_encrypted(ae));
+	assertEqualInt(filenamesEncrypted,
+	    archive_entry_is_metadata_encrypted(ae));
 	/* After setting to true above, this should forever be true */
 	assertEqualInt(1, archive_read_has_encrypted_entries(a));
 	assertEqualIntA(a, expected_read_data_result, archive_read_data(a, buff, sizeof(buff)));
-	if (!solid) {
+	if (!solid || decryptionSupported) {
 		assertEqualMem("This is from c.txt", buff, expected_file_size);
 	}
 
@@ -118,9 +133,14 @@ static void test_encrypted_rar_archive(const char *filename, int filenamesEncryp
 	assertEqualString("d.txt", archive_entry_pathname(ae));
 	assertEqualInt(expected_file_size, archive_entry_size(ae));
 	assertEqualInt(1, archive_entry_is_data_encrypted(ae));
-	assertEqualInt(0, archive_entry_is_metadata_encrypted(ae));
+	assertEqualInt(filenamesEncrypted,
+	    archive_entry_is_metadata_encrypted(ae));
 	assertEqualInt(1, archive_read_has_encrypted_entries(a));
-	assertEqualIntA(a, ARCHIVE_FAILED, archive_read_data(a, buff, sizeof(buff)));
+	assertEqualIntA(a, decryptionSupported && (solid || filenamesEncrypted) ?
+	    expected_file_size : ARCHIVE_FAILED,
+	    archive_read_data(a, buff, sizeof(buff)));
+	if (decryptionSupported && (solid || filenamesEncrypted))
+		assertEqualMem("This is from d.txt", buff, expected_file_size);
 
 	/* End of archive. */
 	assertEqualIntA(a, ARCHIVE_EOF, archive_read_next_header(a, &ae));
@@ -132,19 +152,19 @@ static void test_encrypted_rar_archive(const char *filename, int filenamesEncryp
 
 DEFINE_TEST(test_read_format_rar4_encrypted)
 {
-	test_encrypted_rar_archive("test_read_format_rar4_encrypted.rar", 0, 0);
+	test_encrypted_rar_archive("test_read_format_rar4_encrypted.rar", 0, 0, 0);
 }
 
 DEFINE_TEST(test_read_format_rar4_encrypted_filenames)
 {
-	test_encrypted_rar_archive("test_read_format_rar4_encrypted_filenames.rar", 1, 0);
+	test_encrypted_rar_archive("test_read_format_rar4_encrypted_filenames.rar", 1, 0, 0);
 }
 
 DEFINE_TEST(test_read_format_rar4_solid_encrypted)
 {
 	/* TODO: If solid RAR4 support is ever added, the following should pass */
 #if 0
-	test_encrypted_rar_archive("test_read_format_rar4_solid_encrypted.rar", 0, 1);
+	test_encrypted_rar_archive("test_read_format_rar4_solid_encrypted.rar", 0, 1, 0);
 #else
 	skipping("RAR4 solid archive support not currently available");
 #endif
@@ -152,25 +172,25 @@ DEFINE_TEST(test_read_format_rar4_solid_encrypted)
 
 DEFINE_TEST(test_read_format_rar4_solid_encrypted_filenames)
 {
-	test_encrypted_rar_archive("test_read_format_rar4_solid_encrypted_filenames.rar", 1, 1);
+	test_encrypted_rar_archive("test_read_format_rar4_solid_encrypted_filenames.rar", 1, 1, 0);
 }
 
 DEFINE_TEST(test_read_format_rar5_encrypted)
 {
-	test_encrypted_rar_archive("test_read_format_rar5_encrypted.rar", 0, 0);
+	test_encrypted_rar_archive("test_read_format_rar5_encrypted.rar", 0, 0, 1);
 }
 
 DEFINE_TEST(test_read_format_rar5_encrypted_filenames)
 {
-	test_encrypted_rar_archive("test_read_format_rar5_encrypted_filenames.rar", 1, 0);
+	test_encrypted_rar_archive("test_read_format_rar5_encrypted_filenames.rar", 1, 0, 1);
 }
 
 DEFINE_TEST(test_read_format_rar5_solid_encrypted)
 {
-	test_encrypted_rar_archive("test_read_format_rar5_solid_encrypted.rar", 0, 1);
+	test_encrypted_rar_archive("test_read_format_rar5_solid_encrypted.rar", 0, 1, 1);
 }
 
 DEFINE_TEST(test_read_format_rar5_solid_encrypted_filenames)
 {
-	test_encrypted_rar_archive("test_read_format_rar5_solid_encrypted_filenames.rar", 1, 1);
+	test_encrypted_rar_archive("test_read_format_rar5_solid_encrypted_filenames.rar", 1, 1, 1);
 }
