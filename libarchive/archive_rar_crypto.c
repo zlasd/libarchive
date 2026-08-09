@@ -35,7 +35,8 @@
 
 int
 __archive_rar3_derive_key(const char *password, const uint8_t *salt,
-    uint8_t key[ARCHIVE_RAR3_KEY_SIZE], uint8_t iv[ARCHIVE_RAR3_IV_SIZE])
+    size_t salt_len, uint8_t key[ARCHIVE_RAR3_KEY_SIZE],
+    uint8_t iv[ARCHIVE_RAR3_IV_SIZE])
 {
 	archive_sha1_ctx ctx, snapshot;
 	uint8_t *utf16 = NULL, *seed = NULL;
@@ -44,20 +45,23 @@ __archive_rar3_derive_key(const char *password, const uint8_t *salt,
 	unsigned i, j;
 	int r = -1, ctx_valid = 0;
 
-	if (password == NULL || salt == NULL || key == NULL || iv == NULL)
+	if (password == NULL || (salt == NULL && salt_len != 0) ||
+	    (salt_len != 0 && salt_len != ARCHIVE_RAR3_SALT_SIZE) ||
+	    key == NULL || iv == NULL)
 		return (-1);
 	memset(key, 0, ARCHIVE_RAR3_KEY_SIZE);
 	memset(iv, 0, ARCHIVE_RAR3_IV_SIZE);
 	if (__archive_cryptor_utf8_to_utf16le(password, &utf16,
-	    &utf16_len) != 0 || utf16_len > SIZE_MAX - ARCHIVE_RAR3_SALT_SIZE)
+	    &utf16_len) != 0 || utf16_len > SIZE_MAX - salt_len)
 		goto cleanup;
-	seed_len = utf16_len + ARCHIVE_RAR3_SALT_SIZE;
-	seed = malloc(seed_len);
+	seed_len = utf16_len + salt_len;
+	seed = malloc(seed_len == 0 ? 1 : seed_len);
 	if (seed == NULL)
 		goto cleanup;
 	if (utf16_len != 0)
 		memcpy(seed, utf16, utf16_len);
-	memcpy(seed + utf16_len, salt, ARCHIVE_RAR3_SALT_SIZE);
+	if (salt_len != 0)
+		memcpy(seed + utf16_len, salt, salt_len);
 
 	if (archive_sha1_init(&ctx) != ARCHIVE_OK)
 		goto cleanup;

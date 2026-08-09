@@ -35,7 +35,7 @@
 #define ARCHIVE_RAR5_CHECK_SIZE 12
 #define ARCHIVE_RAR5_MAX_KDF_COUNT 24
 
-int __archive_rar3_derive_key(const char *, const uint8_t *,
+int __archive_rar3_derive_key(const char *, const uint8_t *, size_t,
     uint8_t [ARCHIVE_RAR3_KEY_SIZE], uint8_t [ARCHIVE_RAR3_IV_SIZE]);
 int __archive_rar5_derive_key(const char *, const uint8_t *, unsigned,
     uint8_t [ARCHIVE_RAR5_KEY_SIZE]);
