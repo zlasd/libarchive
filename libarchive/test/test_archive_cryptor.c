@@ -19,8 +19,120 @@
 #include "test.h"
 
 #define __LIBARCHIVE_BUILD 1
+#include "archive_7zip_crypto_private.h"
 #include "archive_cryptor_private.h"
 #include "archive_hmac_private.h"
+
+DEFINE_TEST(test_archive_7zip_aes_properties)
+{
+	static const unsigned char full[] = {
+		0xcc, 0x7f,
+		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+		0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+		0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f
+	};
+	static const unsigned char simple[] = { 0x13 };
+	struct archive_7zip_aes_properties properties;
+
+	assertEqualInt(0, __archive_7zip_aes_parse_properties(simple,
+	    sizeof(simple), &properties));
+	assertEqualInt(19, properties.cycles_power);
+	assertEqualInt(0, properties.salt_len);
+	assertEqualInt(0, properties.iv_len);
+	assertMemoryFilledWith(properties.iv, sizeof(properties.iv), 0);
+
+	assertEqualInt(0, __archive_7zip_aes_parse_properties(full,
+	    sizeof(full), &properties));
+	assertEqualInt(12, properties.cycles_power);
+	assertEqualInt(8, properties.salt_len);
+	assertEqualInt(16, properties.iv_len);
+	assertEqualMem(full + 2, properties.salt, properties.salt_len);
+	assertEqualMem(full + 10, properties.iv, properties.iv_len);
+
+	assertEqualInt(-1, __archive_7zip_aes_parse_properties(NULL, 0,
+	    &properties));
+	assertEqualInt(-1, __archive_7zip_aes_parse_properties(simple, 0,
+	    &properties));
+	assertEqualInt(-1, __archive_7zip_aes_parse_properties(full,
+	    sizeof(full) - 1, &properties));
+	assertEqualInt(-1, __archive_7zip_aes_parse_properties(full,
+	    sizeof(full), NULL));
+}
+
+DEFINE_TEST(test_archive_7zip_password_utf16le)
+{
+	static const unsigned char expected_ascii[] = {
+		'p', 0, 'a', 0, 's', 0, 's', 0
+	};
+	static const unsigned char expected_unicode[] = {
+		0xc6, 0x5b, 0x01, 0x78, 0x3d, 0xd8, 0x12, 0xdd
+	};
+	static const char *invalid[] = {
+		"\xc0\x80", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xe2\x82"
+	};
+	unsigned char *actual = NULL;
+	size_t actual_len = 0, i;
+
+	assertEqualInt(0, __archive_7zip_password_utf16le("pass", &actual,
+	    &actual_len));
+	assertEqualInt(sizeof(expected_ascii), actual_len);
+	assertEqualMem(expected_ascii, actual, actual_len);
+	free(actual);
+
+	actual = NULL;
+	assertEqualInt(0, __archive_7zip_password_utf16le(
+	    "\xe5\xaf\x86\xe7\xa0\x81\xf0\x9f\x94\x92", &actual,
+	    &actual_len));
+	assertEqualInt(sizeof(expected_unicode), actual_len);
+	assertEqualMem(expected_unicode, actual, actual_len);
+	free(actual);
+
+	for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+		actual = NULL;
+		assertEqualInt(-1, __archive_7zip_password_utf16le(invalid[i],
+		    &actual, &actual_len));
+		assert(actual == NULL);
+	}
+}
+
+DEFINE_TEST(test_archive_7zip_aes_kdf)
+{
+	static const unsigned char salt[] = {
+		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77
+	};
+	static const unsigned char expected[] = {
+		0xd8, 0xd1, 0x2e, 0x9d, 0x0a, 0xfd, 0xbe, 0x28,
+		0x04, 0xd4, 0x29, 0x05, 0x7c, 0x0d, 0xdb, 0x8d,
+		0x4f, 0xf8, 0x05, 0xed, 0x8d, 0xd1, 0x7f, 0x79,
+		0x6d, 0xb7, 0xc4, 0x50, 0x09, 0x1b, 0x53, 0x77
+	};
+	static const unsigned char password[] = {
+		'p', 0, 'a', 0, 's', 0, 's', 0, 'w', 0, 'o', 0, 'r', 0, 'd', 0
+	};
+	struct archive_7zip_aes_properties properties;
+	unsigned char actual[ARCHIVE_7ZIP_AES_KEY_SIZE];
+
+	memset(&properties, 0, sizeof(properties));
+	properties.cycles_power = 12;
+	properties.salt_len = sizeof(salt);
+	memcpy(properties.salt, salt, sizeof(salt));
+	assertEqualInt(0, __archive_7zip_aes_derive_key(&properties, password,
+	    sizeof(password), actual));
+	assertEqualMem(expected, actual, sizeof(expected));
+
+	properties.cycles_power = 0x3f;
+	assertEqualInt(0, __archive_7zip_aes_derive_key(&properties, password,
+	    sizeof(password), actual));
+	assertEqualMem(salt, actual, sizeof(salt));
+	assertEqualMem(password, actual + sizeof(salt), sizeof(password));
+	assertMemoryFilledWith(actual + sizeof(salt) + sizeof(password),
+	    sizeof(actual) - sizeof(salt) - sizeof(password), 0);
+
+	properties.cycles_power = ARCHIVE_7ZIP_AES_MAX_CYCLES_POWER + 1;
+	assertEqualInt(-1, __archive_7zip_aes_derive_key(&properties, password,
+	    sizeof(password), actual));
+	__archive_cryptor_secure_zero(actual, sizeof(actual));
+}
 
 DEFINE_TEST(test_archive_cryptor_secure_zero)
 {

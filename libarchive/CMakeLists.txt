@@ -17,6 +17,8 @@ SET(include_HEADERS
 
 # Sources and private headers
 SET(libarchive_SOURCES
+  archive_7zip_crypto.c
+  archive_7zip_crypto_private.h
   archive_acl.c
   archive_acl_private.h
   archive_check_magic.c

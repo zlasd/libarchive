@@ -145,6 +145,8 @@ noinst_HEADERS= \
 	libarchive/filter_fork.h
 
 libarchive_la_SOURCES= \
+	libarchive/archive_7zip_crypto.c \
+	libarchive/archive_7zip_crypto_private.h \
 	libarchive/archive_acl.c \
 	libarchive/archive_check_magic.c \
 	libarchive/archive_cmdline.c \
