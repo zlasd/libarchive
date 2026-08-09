@@ -22,6 +22,7 @@
 #include "archive_7zip_crypto_private.h"
 #include "archive_cryptor_private.h"
 #include "archive_hmac_private.h"
+#include "archive_rar_crypto_private.h"
 
 DEFINE_TEST(test_archive_7zip_aes_properties)
 {
@@ -131,6 +132,42 @@ DEFINE_TEST(test_archive_7zip_aes_kdf)
 	properties.cycles_power = ARCHIVE_7ZIP_AES_MAX_CYCLES_POWER + 1;
 	assertEqualInt(-1, __archive_7zip_aes_derive_key(&properties, password,
 	    sizeof(password), actual));
+	__archive_cryptor_secure_zero(actual, sizeof(actual));
+}
+
+DEFINE_TEST(test_archive_rar5_aes_kdf)
+{
+	static const unsigned char salt[ARCHIVE_RAR5_SALT_SIZE] = {
+		0xc7, 0x44, 0x5e, 0xe1, 0x80, 0xf8, 0xb5, 0x9f,
+		0xd6, 0x2b, 0x43, 0x37, 0x08, 0xbc, 0x57, 0xcd
+	};
+	static const unsigned char expected[ARCHIVE_RAR5_KEY_SIZE] = {
+		0xd7, 0x5c, 0x7c, 0xb7, 0xe2, 0x2d, 0x81, 0x13,
+		0x8d, 0x1a, 0x15, 0x98, 0x8c, 0x78, 0x5d, 0x51,
+		0x41, 0xb4, 0xfa, 0x5c, 0x2a, 0x69, 0x1a, 0x49,
+		0x50, 0x5a, 0xbb, 0x7d, 0x60, 0xae, 0xe6, 0x90
+	};
+	static const unsigned char check[ARCHIVE_RAR5_CHECK_SIZE] = {
+		0xea, 0x35, 0x67, 0x1d, 0x70, 0xf1, 0x2d, 0x4b,
+		0x6b, 0x9c, 0x1a, 0x9c
+	};
+	unsigned char actual[ARCHIVE_RAR5_KEY_SIZE];
+	unsigned char invalid_check[ARCHIVE_RAR5_CHECK_SIZE];
+	int r;
+
+	r = __archive_rar5_derive_key("password", salt, 15, actual);
+	if (r == CRYPTOR_STUB_FUNCTION) {
+		skipping("This platform does not support RAR5 key derivation");
+		return;
+	}
+	assertEqualInt(0, r);
+	assertEqualMem(expected, actual, sizeof(expected));
+	assertEqualInt(1, __archive_rar5_check_value_is_valid(check));
+	memcpy(invalid_check, check, sizeof(check));
+	invalid_check[ARCHIVE_RAR5_CHECK_SIZE - 1] ^= 1;
+	assertEqualInt(0, __archive_rar5_check_value_is_valid(invalid_check));
+	assertEqualInt(-1, __archive_rar5_derive_key("password", salt,
+	    ARCHIVE_RAR5_MAX_KDF_COUNT + 1, actual));
 	__archive_cryptor_secure_zero(actual, sizeof(actual));
 }
 

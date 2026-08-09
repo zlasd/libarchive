@@ -168,6 +168,8 @@ libarchive_la_SOURCES= \
 	libarchive/archive_ppmd7.c \
 	libarchive/archive_ppmd8.c \
 	libarchive/archive_random.c \
+	libarchive/archive_rar_crypto.c \
+	libarchive/archive_rar_crypto_private.h \
 	libarchive/archive_rb.c \
 	libarchive/archive_read.c \
 	libarchive/archive_read_add_passphrase.c \
