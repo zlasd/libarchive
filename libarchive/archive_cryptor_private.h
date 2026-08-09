@@ -161,6 +161,8 @@ typedef int archive_crypto_ctx;
 /* defines */
 #define archive_pbkdf2_sha1(pw, pw_len, salt, salt_len, rounds, dk, dk_len)\
   __archive_cryptor.pbkdf2sha1(pw, pw_len, salt, salt_len, rounds, dk, dk_len)
+#define archive_pbkdf2_sha256(pw, pw_len, salt, salt_len, rounds, dk, dk_len)\
+  __archive_cryptor.pbkdf2sha256(pw, pw_len, salt, salt_len, rounds, dk, dk_len)
 
 #define archive_decrypto_aes_ctr_init(ctx, key, key_len) \
   __archive_cryptor.decrypto_aes_ctr_init(ctx, key, key_len)
@@ -192,6 +194,10 @@ struct archive_cryptor
 {
   /* PKCS5 PBKDF2 HMAC-SHA1 */
   int (*pbkdf2sha1)(const char *pw, size_t pw_len, const uint8_t *salt,
+    size_t salt_len, unsigned rounds, uint8_t *derived_key,
+    size_t derived_key_len);
+  /* PKCS5 PBKDF2 HMAC-SHA256 */
+  int (*pbkdf2sha256)(const char *pw, size_t pw_len, const uint8_t *salt,
     size_t salt_len, unsigned rounds, uint8_t *derived_key,
     size_t derived_key_len);
   /* AES CTR mode(little endian version) */

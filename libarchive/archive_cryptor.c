@@ -28,6 +28,7 @@
 #ifdef HAVE_STRING_H
 #include <string.h>
 #endif
+
 #include "archive.h"
 #include "archive_cryptor_private.h"
 
@@ -174,6 +175,55 @@ pbkdf2_sha1(const char *pw, size_t pw_len, const uint8_t *salt,
 	(void)derived_key; /* UNUSED */
 	(void)derived_key_len; /* UNUSED */
 	return CRYPTOR_STUB_FUNCTION; /* UNSUPPORTED */
+}
+
+#endif
+
+#ifdef ARCHIVE_CRYPTOR_USE_Apple_CommonCrypto
+
+static int
+pbkdf2_sha256(const char *pw, size_t pw_len, const uint8_t *salt,
+    size_t salt_len, unsigned rounds, uint8_t *derived_key,
+    size_t derived_key_len)
+{
+	CCCryptorStatus status;
+
+	status = CCKeyDerivationPBKDF(kCCPBKDF2, pw, pw_len, salt, salt_len,
+	    kCCPRFHmacAlgSHA256, rounds, derived_key, derived_key_len);
+	return status == kCCSuccess ? 0 : -1;
+}
+
+#elif defined(ARCHIVE_CRYPTOR_USE_OPENSSL) && \
+    defined(HAVE_PKCS5_PBKDF2_HMAC)
+
+static int
+pbkdf2_sha256(const char *pw, size_t pw_len, const uint8_t *salt,
+    size_t salt_len, unsigned rounds, uint8_t *derived_key,
+    size_t derived_key_len)
+{
+	if (pw_len > INT_MAX || salt_len > INT_MAX || rounds > INT_MAX ||
+	    derived_key_len > INT_MAX)
+		return -1;
+	return PKCS5_PBKDF2_HMAC(pw, (int)pw_len, salt, (int)salt_len,
+	    (int)rounds, EVP_sha256(), (int)derived_key_len, derived_key) == 1 ?
+	    0 : -1;
+}
+
+#else
+
+static int
+pbkdf2_sha256(const char *pw, size_t pw_len, const uint8_t *salt,
+    size_t salt_len, unsigned rounds, uint8_t *derived_key,
+    size_t derived_key_len)
+{
+	(void)pw;
+	(void)pw_len;
+	(void)salt;
+	(void)salt_len;
+	(void)rounds;
+	(void)derived_key;
+	(void)derived_key_len;
+	return CRYPTOR_STUB_FUNCTION;
 }
 
 #endif
@@ -685,6 +735,7 @@ aes_cbc_decrypt_release(archive_crypto_ctx *ctx)
 const struct archive_cryptor __archive_cryptor =
 {
   &pbkdf2_sha1,
+  &pbkdf2_sha256,
   &aes_ctr_init,
   &aes_ctr_update,
   &aes_ctr_release,

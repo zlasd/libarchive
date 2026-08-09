@@ -151,3 +151,25 @@ DEFINE_TEST(test_archive_cryptor_aes256_cbc)
 
 	test_aes_cbc(key, sizeof(key), ciphertext, plaintext);
 }
+
+DEFINE_TEST(test_archive_cryptor_pbkdf2_sha256)
+{
+	static const unsigned char expected[32] = {
+		0xc5, 0xe4, 0x78, 0xd5, 0x92, 0x88, 0xc8, 0x41,
+		0xaa, 0x53, 0x0d, 0xb6, 0x84, 0x5c, 0x4c, 0x8d,
+		0x96, 0x28, 0x93, 0xa0, 0x01, 0xce, 0x4e, 0x11,
+		0xa4, 0x96, 0x38, 0x73, 0xaa, 0x98, 0x13, 0x4a
+	};
+	unsigned char actual[sizeof(expected)];
+	int result;
+
+	result = archive_pbkdf2_sha256("password", 8,
+	    (const unsigned char *)"salt", 4, 4096, actual, sizeof(actual));
+	if (result == CRYPTOR_STUB_FUNCTION) {
+		skipping("This platform does not support PBKDF2-HMAC-SHA256");
+		return;
+	}
+	assertEqualInt(0, result);
+	assertEqualMem(expected, actual, sizeof(expected));
+	__archive_cryptor_secure_zero(actual, sizeof(actual));
+}
