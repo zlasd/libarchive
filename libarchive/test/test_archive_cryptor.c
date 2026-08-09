@@ -148,21 +148,32 @@ DEFINE_TEST(test_archive_rar5_aes_kdf)
 		0x41, 0xb4, 0xfa, 0x5c, 0x2a, 0x69, 0x1a, 0x49,
 		0x50, 0x5a, 0xbb, 0x7d, 0x60, 0xae, 0xe6, 0x90
 	};
+	static const unsigned char expected_hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE] = {
+		0x52, 0x3a, 0xc4, 0x9a, 0x98, 0xec, 0x2f, 0xc5,
+		0x79, 0x79, 0x26, 0x83, 0xb1, 0xc0, 0xaf, 0x69,
+		0x49, 0x0e, 0xd5, 0xe7, 0x75, 0x93, 0x3e, 0x74,
+		0xab, 0x38, 0x2f, 0x03, 0xf2, 0x78, 0xd8, 0xb7
+	};
 	static const unsigned char check[ARCHIVE_RAR5_CHECK_SIZE] = {
 		0xea, 0x35, 0x67, 0x1d, 0x70, 0xf1, 0x2d, 0x4b,
 		0x6b, 0x9c, 0x1a, 0x9c
 	};
 	unsigned char actual[ARCHIVE_RAR5_KEY_SIZE];
+	unsigned char hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE];
+	unsigned char password_check[ARCHIVE_RAR5_PASSWORD_CHECK_SIZE];
 	unsigned char invalid_check[ARCHIVE_RAR5_CHECK_SIZE];
 	int r;
 
-	r = __archive_rar5_derive_key("password", salt, 15, actual);
+	r = __archive_rar5_derive_keys("password", salt, 15, actual,
+	    hash_key, password_check);
 	if (r == CRYPTOR_STUB_FUNCTION) {
 		skipping("This platform does not support RAR5 key derivation");
 		return;
 	}
 	assertEqualInt(0, r);
 	assertEqualMem(expected, actual, sizeof(expected));
+	assertEqualMem(expected_hash_key, hash_key, sizeof(expected_hash_key));
+	assertEqualMem(check, password_check, sizeof(password_check));
 	assertEqualInt(1, __archive_rar5_check_value_is_valid(check));
 	memcpy(invalid_check, check, sizeof(check));
 	invalid_check[ARCHIVE_RAR5_CHECK_SIZE - 1] ^= 1;
@@ -170,6 +181,45 @@ DEFINE_TEST(test_archive_rar5_aes_kdf)
 	assertEqualInt(-1, __archive_rar5_derive_key("password", salt,
 	    ARCHIVE_RAR5_MAX_KDF_COUNT + 1, actual));
 	__archive_cryptor_secure_zero(actual, sizeof(actual));
+	__archive_cryptor_secure_zero(hash_key, sizeof(hash_key));
+	__archive_cryptor_secure_zero(password_check, sizeof(password_check));
+}
+
+DEFINE_TEST(test_archive_rar5_keyed_checksums)
+{
+	static const unsigned char hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE] = {
+		0x52, 0x3a, 0xc4, 0x9a, 0x98, 0xec, 0x2f, 0xc5,
+		0x79, 0x79, 0x26, 0x83, 0xb1, 0xc0, 0xaf, 0x69,
+		0x49, 0x0e, 0xd5, 0xe7, 0x75, 0x93, 0x3e, 0x74,
+		0xab, 0x38, 0x2f, 0x03, 0xf2, 0x78, 0xd8, 0xb7
+	};
+	static const unsigned char expected_blake2_mac[32] = {
+		0x0b, 0x8d, 0x33, 0x77, 0x73, 0x56, 0x64, 0x6f,
+		0x45, 0x27, 0x18, 0xc1, 0x77, 0x2b, 0xc6, 0x9d,
+		0xd3, 0xa9, 0x2a, 0xfc, 0xec, 0xa8, 0xae, 0xd5,
+		0x60, 0xc9, 0xba, 0x37, 0xd0, 0xe8, 0xae, 0x86
+	};
+	unsigned char blake2[32], mac[32];
+	uint32_t crc_mac;
+	size_t i;
+
+	for (i = 0; i < sizeof(blake2); i++)
+		blake2[i] = (unsigned char)i;
+	if (__archive_rar5_mac_blake2(hash_key, blake2, mac) != 0) {
+		skipping("This platform does not support RAR5 keyed checksums");
+		return;
+	}
+	assertEqualMem(expected_blake2_mac, mac, sizeof(mac));
+
+	/* Vector captured from a RAR 7.23 stored archive. */
+	assertEqualInt(0, __archive_rar5_mac_crc32((const unsigned char[]){
+	    0xc7, 0x3c, 0x40, 0x9c, 0x44, 0x6e, 0x26, 0xff,
+	    0x1e, 0xd6, 0x36, 0x6e, 0xa1, 0x62, 0x85, 0xc0,
+	    0xab, 0x20, 0x2c, 0x82, 0xe8, 0xb5, 0xbb, 0xdb,
+	    0xd8, 0x9c, 0xa4, 0x0c, 0x64, 0x1e, 0xbc, 0xe7
+	}, UINT32_C(0x0ccd89c2), &crc_mac));
+	assertEqualInt(UINT32_C(0xa523aab3), crc_mac);
+	__archive_cryptor_secure_zero(mac, sizeof(mac));
 }
 
 DEFINE_TEST(test_archive_rar3_aes_kdf)
