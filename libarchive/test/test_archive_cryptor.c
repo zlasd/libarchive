@@ -172,6 +172,35 @@ DEFINE_TEST(test_archive_rar5_aes_kdf)
 	__archive_cryptor_secure_zero(actual, sizeof(actual));
 }
 
+DEFINE_TEST(test_archive_rar3_aes_kdf)
+{
+	static const unsigned char salt[ARCHIVE_RAR3_SALT_SIZE] = {
+		0xbe, 0x02, 0x1b, 0x9a, 0x79, 0x2a, 0x8a, 0x55
+	};
+	static const unsigned char expected_key[ARCHIVE_RAR3_KEY_SIZE] = {
+		0xa5, 0x2c, 0x55, 0x31, 0xcd, 0x3f, 0x94, 0xc7,
+		0xcc, 0x75, 0x33, 0x2f, 0x91, 0xaa, 0xdc, 0xfc
+	};
+	static const unsigned char expected_iv[ARCHIVE_RAR3_IV_SIZE] = {
+		0xb4, 0x5e, 0x05, 0xc7, 0x49, 0x48, 0xed, 0x33,
+		0xf2, 0x8b, 0x0a, 0xd4, 0x7a, 0xd4, 0x39, 0x37
+	};
+	unsigned char key[ARCHIVE_RAR3_KEY_SIZE];
+	unsigned char iv[ARCHIVE_RAR3_IV_SIZE];
+	int r;
+
+	r = __archive_rar3_derive_key("password", salt, key, iv);
+	if (r == CRYPTOR_STUB_FUNCTION) {
+		skipping("This platform does not support RAR3 key derivation");
+		return;
+	}
+	assertEqualInt(0, r);
+	assertEqualMem(expected_key, key, sizeof(key));
+	assertEqualMem(expected_iv, iv, sizeof(iv));
+	__archive_cryptor_secure_zero(key, sizeof(key));
+	__archive_cryptor_secure_zero(iv, sizeof(iv));
+}
+
 DEFINE_TEST(test_archive_cryptor_secure_zero)
 {
 	unsigned char secret[32];
