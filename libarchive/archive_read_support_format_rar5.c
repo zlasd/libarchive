@@ -415,6 +415,7 @@ static void clear_data_ready_stack(struct rar5 *rar5);
 static void rar5_deinit(struct rar5 *rar5);
 static int rar5_finish_data_decryption(struct archive_read *, struct rar5 *);
 static int rar5_prepare_encrypted_header(struct archive_read *, struct rar5 *);
+static void rar5_release_encrypted_header(struct rar5 *);
 
 /* CDE_xxx = Circular Double Ended (Queue) return values. */
 enum CDE_RETURN_VALUES {
@@ -2315,6 +2316,7 @@ static int process_head_service(struct archive_read* a, struct rar5 *rar5,
 		return ret;
 
 	rar5->file.service = 1;
+	rar5_release_encrypted_header(rar5);
 
 	/* But skip the data part automatically. It's no use for the user
 	 * anyway.  It contains only service data, not even needed to
@@ -2691,6 +2693,18 @@ damaged:
 	return (ARCHIVE_FATAL);
 }
 
+static void
+rar5_release_encrypted_header(struct rar5 *rar5)
+{
+	if (!rar5->header_crypt.active)
+		return;
+	__archive_cryptor_secure_zero(rar5->header_crypt.buffer,
+	    rar5->header_crypt.buffer_size);
+	rar5->header_crypt.active = 0;
+	rar5->header_crypt.size = 0;
+	rar5->header_crypt.offset = 0;
+}
+
 static int process_base_block(struct archive_read* a,
     struct archive_entry* entry)
 {
@@ -2888,13 +2902,7 @@ static int skip_base_block(struct archive_read* a) {
 		return ARCHIVE_FATAL;
 
 	ret = process_base_block(a, entry);
-	if (rar5->header_crypt.active) {
-		__archive_cryptor_secure_zero(rar5->header_crypt.buffer,
-		    rar5->header_crypt.buffer_size);
-		rar5->header_crypt.active = 0;
-		rar5->header_crypt.size = 0;
-		rar5->header_crypt.offset = 0;
-	}
+	rar5_release_encrypted_header(rar5);
 
 	/* Discard operations on this archive_entry structure. */
 	archive_entry_free(entry);
@@ -2997,13 +3005,7 @@ static int rar5_read_header(struct archive_read *a,
 
 	do {
 		ret = process_base_block(a, entry);
-		if (rar5->header_crypt.active) {
-			__archive_cryptor_secure_zero(rar5->header_crypt.buffer,
-			    rar5->header_crypt.buffer_size);
-			rar5->header_crypt.active = 0;
-			rar5->header_crypt.size = 0;
-			rar5->header_crypt.offset = 0;
-		}
+		rar5_release_encrypted_header(rar5);
 	} while(ret == ARCHIVE_RETRY ||
 			(rar5->main.endarc > 0 && ret == ARCHIVE_OK));
 

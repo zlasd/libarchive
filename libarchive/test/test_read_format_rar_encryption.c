@@ -189,3 +189,28 @@ DEFINE_TEST(test_read_format_rar5_solid_encrypted_filenames)
 {
 	test_encrypted_rar_archive("test_read_format_rar5_solid_encrypted_filenames.rar", 1, 1, 1);
 }
+
+DEFINE_TEST(test_read_format_rar5_encrypted_quickopen)
+{
+	struct archive_entry *ae;
+	struct archive *a;
+
+	extract_reference_file(
+	    "test_read_format_rar5_encrypted_quickopen.rar");
+	assert((a = archive_read_new()) != NULL);
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_filter_all(a));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_all(a));
+	assertEqualIntA(a, ARCHIVE_OK,
+	    archive_read_add_passphrase(a, "密碼🔒"));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_open_filename(a,
+	    "test_read_format_rar5_encrypted_quickopen.rar", 10240));
+
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_next_header(a, &ae));
+	assertEqualString("a.txt", archive_entry_pathname(ae));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_next_header(a, &ae));
+	assertEqualString("b.txt", archive_entry_pathname(ae));
+	assertEqualIntA(a, ARCHIVE_EOF, archive_read_next_header(a, &ae));
+
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_close(a));
+	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
+}
