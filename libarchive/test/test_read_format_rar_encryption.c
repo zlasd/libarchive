@@ -157,7 +157,7 @@ DEFINE_TEST(test_read_format_rar4_encrypted)
 
 DEFINE_TEST(test_read_format_rar4_encrypted_filenames)
 {
-	test_encrypted_rar_archive("test_read_format_rar4_encrypted_filenames.rar", 1, 0, 0);
+	test_encrypted_rar_archive("test_read_format_rar4_encrypted_filenames.rar", 1, 0, 1);
 }
 
 DEFINE_TEST(test_read_format_rar4_solid_encrypted)
