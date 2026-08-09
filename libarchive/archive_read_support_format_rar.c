@@ -323,6 +323,7 @@ struct rar
   int64_t bytes_remaining;
   int64_t bytes_uncopied;
   int64_t offset;
+  int64_t unp_base;
   int64_t offset_outgoing;
   int64_t offset_seek;
   char valid;
@@ -1384,7 +1385,8 @@ archive_read_format_rar_read_data(struct archive_read *a, const void **buff,
   *buff = NULL;
   if (rar->entry_eof || rar->offset_seek >= rar->unp_size) {
     *size = 0;
-    *offset = rar->offset;
+    *offset = (rar->main_flags & MHD_SOLID) ?
+        rar->offset_outgoing : rar->offset;
     if (rar->crypt.ctx_valid)
     {
       if (rar->file_crc != rar->crc_calculated)
@@ -1413,7 +1415,7 @@ archive_read_format_rar_read_data(struct archive_read *a, const void **buff,
   case COMPRESS_METHOD_GOOD:
   case COMPRESS_METHOD_BEST:
     ret = read_data_compressed(a, buff, size, offset, 0);
-    if (ret != ARCHIVE_OK && ret != ARCHIVE_WARN) {
+    if (ret != ARCHIVE_OK && ret != ARCHIVE_WARN && ret != ARCHIVE_EOF) {
       __archive_ppmd7_functions.Ppmd7_Free(&rar->ppmd7_context);
       rar->start_new_table = 1;
       rar->ppmd_valid = 0;
@@ -1443,8 +1445,19 @@ static int
 archive_read_format_rar_read_data_skip(struct archive_read *a)
 {
   struct rar *rar = a->format->data;
+  const void *buffer;
+  size_t size;
+  int64_t offset;
   int64_t bytes_skipped;
   int ret;
+
+  if (rar->main_flags & MHD_SOLID)
+  {
+    do {
+      ret = archive_read_format_rar_read_data(a, &buffer, &size, &offset);
+    } while (ret == ARCHIVE_OK || ret == ARCHIVE_WARN);
+    return (ret == ARCHIVE_EOF ? ARCHIVE_OK : ret);
+  }
 
   if (rar->bytes_unconsumed > 0) {
       /* Consume as much as the decompressor actually used. */
@@ -1735,12 +1748,6 @@ read_header(struct archive_read *a, struct archive_entry *entry,
     rar->mnsec = 0;
     rar->arctime = 0;
     rar->arcnsec = 0;
-  }
-  else
-  {
-    archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
-                      "RAR solid archive support unavailable");
-    return (ARCHIVE_FATAL);
   }
 
   if ((h = rar_header_read_ahead(a, (size_t)header_size - 7)) == NULL)
@@ -2115,9 +2122,14 @@ read_header(struct archive_read *a, struct archive_entry *entry,
   }
 
   rar->bytes_uncopied = rar->bytes_unconsumed = 0;
-  rar->lzss.position = rar->offset = 0;
+  if (rar->file_flags & FHD_SOLID)
+    rar->offset = rar->lzss.position;
+  else
+    rar->lzss.position = rar->offset = 0;
+  rar->unp_base = rar->offset;
   rar->offset_seek = 0;
-  rar->dictionary_size = 0;
+  if (!(rar->file_flags & FHD_SOLID))
+    rar->dictionary_size = 0;
   rar->offset_outgoing = 0;
   rar->br.cache_avail = 0;
   rar->br.avail_in = 0;
@@ -2125,16 +2137,25 @@ read_header(struct archive_read *a, struct archive_entry *entry,
   rar->crc_calculated = 0;
   rar->entry_eof = 0;
   rar->valid = 1;
-  rar->is_ppmd_block = 0;
-  rar->start_new_table = 1;
+  if (!(rar->file_flags & FHD_SOLID))
+  {
+    rar->is_ppmd_block = 0;
+    rar->start_new_table = 1;
+  }
   free(rar->unp_buffer);
   rar->unp_buffer = NULL;
   rar->unp_offset = 0;
   rar->unp_buffer_size = UNP_BUFFER_SIZE;
-  memset(rar->lengthtable, 0, sizeof(rar->lengthtable));
-  __archive_ppmd7_functions.Ppmd7_Free(&rar->ppmd7_context);
-  rar->ppmd_valid = rar->ppmd_eod = 0;
+  if (!(rar->file_flags & FHD_SOLID))
+  {
+    memset(rar->lengthtable, 0, sizeof(rar->lengthtable));
+    __archive_ppmd7_functions.Ppmd7_Free(&rar->ppmd7_context);
+    rar->ppmd_valid = 0;
+  }
+  rar->ppmd_eod = 0;
   rar->filters.filterstart = INT64_MAX;
+  rar->filters.lastend = rar->offset;
+  rar->filters.bytes_ready = 0;
 
   archive_entry_set_mtime(entry, rar->mtime, rar->mnsec);
   archive_entry_set_ctime(entry, rar->ctime, rar->cnsec);
@@ -2400,7 +2421,8 @@ read_data_compressed(struct archive_read *a, const void **buff, size_t *size,
     }
 
     if (rar->ppmd_eod ||
-       (rar->dictionary_size && rar->offset >= rar->unp_size))
+       (rar->dictionary_size && rar->offset >= rar->unp_base &&
+        rar->offset - rar->unp_base >= rar->unp_size))
     {
       if (rar->unp_offset > 0) {
         /*
@@ -2418,7 +2440,7 @@ read_data_compressed(struct archive_read *a, const void **buff, size_t *size,
       }
       *buff = NULL;
       *size = 0;
-      *offset = rar->offset;
+      *offset = rar->offset_outgoing;
       if (rar->file_crc != rar->crc_calculated) {
 #ifndef DONT_FAIL_ON_CRC_ERROR
         archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
@@ -2866,7 +2888,11 @@ parse_codes(struct archive_read *a)
     void *new_window;
     unsigned int new_size;
 
-    if (rar->unp_size >= DICTIONARY_MAX_SIZE)
+    if ((rar->main_flags & MHD_SOLID) &&
+        (rar->file_flags & DICTIONARY_MASK) != FILE_IS_DIRECTORY)
+      new_size = 64 * 1024U <<
+          ((rar->file_flags & DICTIONARY_MASK) >> 5);
+    else if (rar->unp_size >= DICTIONARY_MAX_SIZE)
       new_size = DICTIONARY_MAX_SIZE;
     else
       new_size = rar_fls((unsigned int)rar->unp_size) << 1;
