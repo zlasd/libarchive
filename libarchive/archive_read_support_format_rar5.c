@@ -327,8 +327,10 @@ struct rar5_crypt {
 	uint8_t salt[ARCHIVE_RAR5_SALT_SIZE];
 	uint8_t iv[ARCHIVE_RAR5_IV_SIZE];
 	uint8_t check[ARCHIVE_RAR5_CHECK_SIZE];
+	uint8_t hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE];
 	archive_crypto_ctx ctx;
 	int ctx_valid;
+	int hash_key_valid;
 	uint8_t *buffer;
 	uint8_t *buffer_ptr;
 	size_t buffer_size;
@@ -926,6 +928,9 @@ static void reset_file_context(struct rar5 *rar5) {
 	memset(rar5->crypt.salt, 0, sizeof(rar5->crypt.salt));
 	memset(rar5->crypt.iv, 0, sizeof(rar5->crypt.iv));
 	memset(rar5->crypt.check, 0, sizeof(rar5->crypt.check));
+	__archive_cryptor_secure_zero(rar5->crypt.hash_key,
+	    sizeof(rar5->crypt.hash_key));
+	rar5->crypt.hash_key_valid = 0;
 	memset(&rar5->file, 0, sizeof(rar5->file));
 	blake2sp_init(&rar5->file.b2state, 32);
 
@@ -1854,11 +1859,6 @@ parse_file_extra_crypt(struct archive_read *a, struct archive_entry *entry,
 	rar5->crypt.present = 1;
 	rar5->cstate.data_encrypted = 1;
 	rar5->has_encrypted_entries = 1;
-	if (rar5->crypt.tweaked_checksums) {
-		/* These values are keyed and cannot be compared as plain hashes. */
-		rar5->file.stored_crc32 = 0;
-		rar5->file.has_blake2 = 0;
-	}
 	archive_entry_set_is_data_encrypted(entry, 1);
 	return (ARCHIVE_OK);
 }
@@ -2283,7 +2283,7 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 	}
 
 	if(file_flags & CRC32) {
-		rar5->file.stored_crc32 = rar5->crypt.tweaked_checksums ? 0 : crc;
+		rar5->file.stored_crc32 = crc;
 	}
 
 	if(!rar5->cstate.switch_multivolume) {
@@ -2551,8 +2551,10 @@ process_head_crypt(struct archive_read *a, struct rar5 *rar5,
 {
 	const uint8_t *p;
 	const char *passphrase;
+	uint8_t password_check[ARCHIVE_RAR5_PASSWORD_CHECK_SIZE];
 	uint64_t version, flags;
-	int r;
+	int had_passphrase = 0, r;
+	unsigned retry = 0;
 
 	if (!read_var(a, &version, NULL) || version != 0 ||
 	    !read_var(a, &flags, NULL) || (flags & ~UINT64_C(1)) != 0 ||
@@ -2587,19 +2589,43 @@ process_head_crypt(struct archive_read *a, struct rar5 *rar5,
 	}
 
 	__archive_read_reset_passphrase(a);
-	passphrase = __archive_read_next_passphrase(a);
-	if (passphrase == NULL) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-		    "Passphrase required for encrypted RAR5 headers");
-		return (ARCHIVE_FATAL);
-	}
-	r = __archive_rar5_derive_key(passphrase, rar5->header_crypt.salt,
-	    rar5->header_crypt.kdf_count, rar5->header_crypt.key);
-	if (r != 0) {
+	while ((passphrase = __archive_read_next_passphrase(a)) != NULL) {
+		had_passphrase = 1;
+		r = __archive_rar5_derive_keys(passphrase,
+		    rar5->header_crypt.salt, rar5->header_crypt.kdf_count,
+		    rar5->header_crypt.key, NULL,
+		    rar5->header_crypt.has_check ? password_check : NULL);
+		if (r != 0) {
+			__archive_cryptor_secure_zero(password_check,
+			    sizeof(password_check));
+			__archive_cryptor_secure_zero(rar5->header_crypt.key,
+			    sizeof(rar5->header_crypt.key));
+			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+			    r == CRYPTOR_STUB_FUNCTION ?
+			    "RAR5 decryption is unsupported by this build" :
+			    "Failed to derive RAR5 archive encryption key");
+			return (ARCHIVE_FATAL);
+		}
+		if (!rar5->header_crypt.has_check ||
+		    __archive_cryptor_constant_time_equal(password_check,
+		    rar5->header_crypt.check, sizeof(password_check)))
+			break;
 		__archive_cryptor_secure_zero(rar5->header_crypt.key,
 		    sizeof(rar5->header_crypt.key));
+		if (retry++ > 10000) {
+			__archive_cryptor_secure_zero(password_check,
+			    sizeof(password_check));
+			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+			    "Too many incorrect RAR5 passphrases");
+			return (ARCHIVE_FATAL);
+		}
+	}
+	__archive_cryptor_secure_zero(password_check, sizeof(password_check));
+	if (passphrase == NULL) {
 		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-		    "Failed to derive RAR5 archive encryption key");
+		    had_passphrase ?
+		    "Incorrect passphrase for encrypted RAR5 headers" :
+		    "Passphrase required for encrypted RAR5 headers");
 		return (ARCHIVE_FATAL);
 	}
 	rar5->header_crypt.key_valid = 1;
@@ -4625,10 +4651,20 @@ static int verify_checksums(struct archive_read* a) {
 		 * checksum (CRC32 or BLAKE2sp) is the same as what is stored
 		 * in the archive. */
 		if(rar5->file.stored_crc32 > 0) {
+			uint32_t calculated_crc32 = rar5->file.calculated_crc32;
+
 			/* Check CRC32 only when the file contains a CRC32
 			 * value for this file. */
+			if (rar5->crypt.tweaked_checksums &&
+			    (!rar5->crypt.hash_key_valid ||
+			    __archive_rar5_mac_crc32(rar5->crypt.hash_key,
+			    calculated_crc32, &calculated_crc32) != 0)) {
+				archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+				    "Failed to verify encrypted RAR5 checksum");
+				return (ARCHIVE_FAILED);
+			}
 
-			if(rar5->file.calculated_crc32 !=
+			if(calculated_crc32 !=
 			    rar5->file.stored_crc32) {
 				/* Checksums do not match; the unpacked file
 				 * is corrupted. */
@@ -4636,7 +4672,7 @@ static int verify_checksums(struct archive_read* a) {
 				DEBUG_CODE {
 					printf("Checksum error: CRC32 "
 					    "(was: %08" PRIx32 ", expected: %08" PRIx32 ")\n",
-					    rar5->file.calculated_crc32,
+					    calculated_crc32,
 					    rar5->file.stored_crc32);
 				}
 
@@ -4651,7 +4687,7 @@ static int verify_checksums(struct archive_read* a) {
 					printf("Checksum OK: CRC32 "
 					    "(%08" PRIx32 "/%08" PRIx32 ")\n",
 					    rar5->file.stored_crc32,
-					    rar5->file.calculated_crc32);
+					    calculated_crc32);
 				}
 			}
 		}
@@ -4672,8 +4708,21 @@ static int verify_checksums(struct archive_read* a) {
 
 			uint8_t b2_buf[32];
 			(void) blake2sp_final(&rar5->file.b2state, b2_buf, 32);
+			if (rar5->crypt.tweaked_checksums &&
+			    (!rar5->crypt.hash_key_valid ||
+			    __archive_rar5_mac_blake2(rar5->crypt.hash_key, b2_buf,
+			    b2_buf) != 0)) {
+				__archive_cryptor_secure_zero(b2_buf,
+				    sizeof(b2_buf));
+				archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+				    "Failed to verify encrypted RAR5 checksum");
+				return (ARCHIVE_FAILED);
+			}
 
-			if(memcmp(&rar5->file.blake2sp, b2_buf, 32) != 0) {
+			if(!__archive_cryptor_constant_time_equal(
+			    &rar5->file.blake2sp, b2_buf, 32)) {
+				__archive_cryptor_secure_zero(b2_buf,
+				    sizeof(b2_buf));
 #ifndef DONT_FAIL_ON_CRC_ERROR
 				archive_set_error(&a->archive,
 				    ARCHIVE_ERRNO_FILE_FORMAT,
@@ -4682,6 +4731,7 @@ static int verify_checksums(struct archive_read* a) {
 				return ARCHIVE_FAILED;
 #endif
 			}
+			__archive_cryptor_secure_zero(b2_buf, sizeof(b2_buf));
 		}
 	}
 
@@ -4697,8 +4747,10 @@ static int
 rar5_init_data_decryption(struct archive_read *a, struct rar5 *rar5)
 {
 	uint8_t key[ARCHIVE_RAR5_KEY_SIZE];
+	uint8_t password_check[ARCHIVE_RAR5_PASSWORD_CHECK_SIZE];
 	const char *passphrase;
-	int r;
+	int had_passphrase = 0, r;
+	unsigned retry = 0;
 
 	if (rar5->crypt.ctx_valid)
 		return (ARCHIVE_OK);
@@ -4714,22 +4766,46 @@ rar5_init_data_decryption(struct archive_read *a, struct rar5 *rar5)
 		return (ARCHIVE_FAILED);
 	}
 	__archive_read_reset_passphrase(a);
-	passphrase = __archive_read_next_passphrase(a);
+	while ((passphrase = __archive_read_next_passphrase(a)) != NULL) {
+		had_passphrase = 1;
+		r = __archive_rar5_derive_keys(passphrase, rar5->crypt.salt,
+		    rar5->crypt.kdf_count, key,
+		    rar5->crypt.tweaked_checksums ? rar5->crypt.hash_key : NULL,
+		    rar5->crypt.has_check ? password_check : NULL);
+		if (r != 0) {
+			__archive_cryptor_secure_zero(key, sizeof(key));
+			__archive_cryptor_secure_zero(password_check,
+			    sizeof(password_check));
+			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+			    r == CRYPTOR_STUB_FUNCTION ?
+			    "RAR5 decryption is unsupported by this build" :
+			    "Failed to derive RAR5 encryption key");
+			return (ARCHIVE_FAILED);
+		}
+		if (!rar5->crypt.has_check ||
+		    __archive_cryptor_constant_time_equal(password_check,
+		    rar5->crypt.check, sizeof(password_check)))
+			break;
+		__archive_cryptor_secure_zero(key, sizeof(key));
+		__archive_cryptor_secure_zero(rar5->crypt.hash_key,
+		    sizeof(rar5->crypt.hash_key));
+		if (retry++ > 10000) {
+			__archive_cryptor_secure_zero(password_check,
+			    sizeof(password_check));
+			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+			    "Too many incorrect RAR5 passphrases");
+			return (ARCHIVE_FAILED);
+		}
+	}
+	__archive_cryptor_secure_zero(password_check, sizeof(password_check));
 	if (passphrase == NULL) {
 		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+		    had_passphrase ?
+		    "Incorrect passphrase for encrypted RAR5 entry" :
 		    "Passphrase required for encrypted RAR5 entry");
 		return (ARCHIVE_FAILED);
 	}
-	r = __archive_rar5_derive_key(passphrase, rar5->crypt.salt,
-	    rar5->crypt.kdf_count, key);
-	if (r != 0) {
-		__archive_cryptor_secure_zero(key, sizeof(key));
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-		    r == CRYPTOR_STUB_FUNCTION ?
-		    "RAR5 decryption is unsupported by this build" :
-		    "Failed to derive RAR5 encryption key");
-		return (ARCHIVE_FAILED);
-	}
+	rar5->crypt.hash_key_valid = rar5->crypt.tweaked_checksums;
 	r = archive_decrypto_aes_cbc_init(&rar5->crypt.ctx, key,
 	    sizeof(key), rar5->crypt.iv);
 	__archive_cryptor_secure_zero(key, sizeof(key));
@@ -4942,6 +5018,8 @@ static int rar5_cleanup(struct archive_read *a) {
 		__archive_cryptor_secure_zero(rar5->crypt.buffer,
 		    rar5->crypt.buffer_size);
 	free(rar5->crypt.buffer);
+	__archive_cryptor_secure_zero(rar5->crypt.hash_key,
+	    sizeof(rar5->crypt.hash_key));
 	__archive_cryptor_secure_zero(rar5->header_crypt.key,
 	    sizeof(rar5->header_crypt.key));
 	if (rar5->header_crypt.buffer != NULL)

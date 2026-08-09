@@ -201,6 +201,8 @@ DEFINE_TEST(test_read_format_rar5_encrypted_quickopen)
 	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_filter_all(a));
 	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_all(a));
 	assertEqualIntA(a, ARCHIVE_OK,
+	    archive_read_add_passphrase(a, "wrong password"));
+	assertEqualIntA(a, ARCHIVE_OK,
 	    archive_read_add_passphrase(a, "密碼🔒"));
 	assertEqualIntA(a, ARCHIVE_OK, archive_read_open_filename(a,
 	    "test_read_format_rar5_encrypted_quickopen.rar", 10240));
@@ -212,5 +214,68 @@ DEFINE_TEST(test_read_format_rar5_encrypted_quickopen)
 	assertEqualIntA(a, ARCHIVE_EOF, archive_read_next_header(a, &ae));
 
 	assertEqualIntA(a, ARCHIVE_OK, archive_read_close(a));
+	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
+}
+
+DEFINE_TEST(test_read_format_rar5_encrypted_blake2)
+{
+	const char *refname = "test_read_format_rar5_encrypted_blake2.rar";
+	struct archive_entry *ae;
+	struct archive *a;
+	FILE *f;
+	char buff[512];
+	int byte;
+
+	extract_reference_file(refname);
+	assert((a = archive_read_new()) != NULL);
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_filter_all(a));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_all(a));
+	assertEqualIntA(a, ARCHIVE_OK,
+	    archive_read_add_passphrase(a, "wrong password"));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_open_filename(a, refname,
+	    10240));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_next_header(a, &ae));
+	assertEqualIntA(a, ARCHIVE_FAILED,
+	    archive_read_data(a, buff, sizeof(buff)));
+	assert(strstr(archive_error_string(a), "Incorrect passphrase") != NULL);
+	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
+
+	assert((a = archive_read_new()) != NULL);
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_filter_all(a));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_all(a));
+	assertEqualIntA(a, ARCHIVE_OK,
+	    archive_read_add_passphrase(a, "wrong password"));
+	assertEqualIntA(a, ARCHIVE_OK,
+	    archive_read_add_passphrase(a, "password"));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_open_filename(a, refname,
+	    10240));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_next_header(a, &ae));
+	assertEqualString("payload.txt", archive_entry_pathname(ae));
+	assertEqualInt(1, archive_entry_is_data_encrypted(ae));
+	assertEqualIntA(a, 315, archive_read_data(a, buff, sizeof(buff)));
+	assertEqualMem("begin 664 ", buff, 10);
+	assertEqualIntA(a, 0, archive_read_data(a, buff, sizeof(buff)));
+	assertEqualIntA(a, ARCHIVE_EOF, archive_read_next_header(a, &ae));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_close(a));
+	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
+
+	/* Offset 200 is inside this fixture's stored ciphertext. */
+	assert((f = fopen(refname, "r+b")) != NULL);
+	assertEqualInt(0, fseek(f, 200, SEEK_SET));
+	assert((byte = fgetc(f)) != EOF);
+	assertEqualInt(0, fseek(f, 200, SEEK_SET));
+	assert(fputc(byte ^ 1, f) != EOF);
+	assertEqualInt(0, fclose(f));
+	assert((a = archive_read_new()) != NULL);
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_filter_all(a));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_all(a));
+	assertEqualIntA(a, ARCHIVE_OK,
+	    archive_read_add_passphrase(a, "password"));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_open_filename(a, refname,
+	    10240));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_next_header(a, &ae));
+	assertEqualIntA(a, ARCHIVE_FAILED,
+	    archive_read_data(a, buff, sizeof(buff)));
+	assert(strstr(archive_error_string(a), "Checksum error") != NULL);
 	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
 }
