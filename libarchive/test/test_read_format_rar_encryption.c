@@ -152,7 +152,7 @@ static void test_encrypted_rar_archive(const char *filename,
 
 DEFINE_TEST(test_read_format_rar4_encrypted)
 {
-	test_encrypted_rar_archive("test_read_format_rar4_encrypted.rar", 0, 0, 0);
+	test_encrypted_rar_archive("test_read_format_rar4_encrypted.rar", 0, 0, 1);
 }
 
 DEFINE_TEST(test_read_format_rar4_encrypted_filenames)
