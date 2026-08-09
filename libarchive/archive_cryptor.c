@@ -44,6 +44,28 @@ int __libarchive_cryptor_build_hack(void) {
 	return 0;
 }
 
+void
+__archive_cryptor_secure_zero(void *buffer, size_t length)
+{
+	volatile unsigned char *p = (volatile unsigned char *)buffer;
+
+	while (length-- > 0)
+		*p++ = 0;
+}
+
+int
+__archive_cryptor_constant_time_equal(const void *left, const void *right,
+    size_t length)
+{
+	const unsigned char *l = (const unsigned char *)left;
+	const unsigned char *r = (const unsigned char *)right;
+	unsigned char difference = 0;
+
+	while (length-- > 0)
+		difference |= *l++ ^ *r++;
+	return difference == 0;
+}
+
 #ifdef ARCHIVE_CRYPTOR_USE_Apple_CommonCrypto
 
 static int

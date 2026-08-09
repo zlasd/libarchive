@@ -40,6 +40,10 @@
  */
 int __libarchive_cryptor_build_hack(void);
 
+/* Helpers for handling secret material. */
+void __archive_cryptor_secure_zero(void *, size_t);
+int __archive_cryptor_constant_time_equal(const void *, const void *, size_t);
+
 #ifdef __APPLE__
 # include <AvailabilityMacros.h>
 # if MAC_OS_X_VERSION_MAX_ALLOWED >= 1080
