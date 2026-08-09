@@ -1,6 +1,6 @@
 # Maou Console 加密 7z / RAR 解压实现计划
 
-状态：实现前计划  
+状态：已实现并完成本地验收（2026-08-10）
 基线：libarchive 3.8.9，`27cbc7827172698143e440801fc0ba39ccb4f1f5`  
 开发分支：`codex/encrypted-7z-rar`  
 调研输入：`../maou-console/docs/LIBARCHIVE-ENCRYPTED-7Z-RAR-PLAN.md`
@@ -20,7 +20,7 @@ RAR3/4 solid 不能作为“只增加解密”的普通验收项：3.8.9 reader 
 
 ## 2. 3.8.9 基线结论
 
-### 2.1 已验证状态
+### 2.1 实施前已验证状态
 
 - 官方 `v3.8.9` 是附注标签，实际指向提交 `27cbc7827172698143e440801fc0ba39ccb4f1f5`。
 - 本地从该提交创建了 `codex/encrypted-7z-rar`。
@@ -254,9 +254,69 @@ CI 分层：
 7. 每个逻辑步骤独立本地提交，不推送、不创建 PR、不改写历史。
 8. KDF、dictionary 和文件数上限根据单元测试与本地 benchmark 设定并记录。
 
-第一批代码只做 P0 + P1，然后完成 P2/P3 的加密 7z。RAR5 在许可证门通过后继续；RAR3/4 crypto 与 solid reader 分开提交，最终以全部格式的回归和 sanitizer 通过作为完成条件。
+实际实施按上述边界完成：crypto primitive、7z、RAR5、RAR3/4 crypto 与 RAR3/4 solid reader 均保持独立提交，最后以全量回归、sanitizer 和双 crypto backend 验收收口。
 
-## 8. 参考
+## 8. 实现结果与验收
+
+### 8.1 已交付能力
+
+| 模块 | 实现结果 |
+| --- | --- |
+| 通用 crypto | secure zero、constant-time compare、严格 UTF-8 到 UTF-16LE、AES-128/256-CBC 无 padding 流式解密、PBKDF2-HMAC-SHA256、HMAC-SHA256、SHA-1 context clone |
+| backend | Apple CommonCrypto 与 OpenSSL 可运行；其他配置保持可编译的稳定 stub，不伪装为支持 |
+| 7z | AES properties/KDF、文件数据加密、encoded header 加密、solid folder，解密后复用现有 Copy/LZMA/LZMA2/PPMd 与 filter 链 |
+| RAR5 | `EX_CRYPT` 数据解密、`HEAD_CRYPT` header 解密、Store/压缩/solid、加密 QuickOpen service、Unicode 密码、可靠 password check、keyed CRC32 与 BLAKE2sp 校验 |
+| RAR3/4 | 有盐/无盐 SHA-1 KDF、AES-128-CBC 文件数据和主头解密、Store/现有压缩方法、加密文件名 |
+| RAR3/4 solid | dictionary、Huffman table、PPMd、filter program 状态跨 entry 保留；skip 前序 entry 时实际解码并丢弃输出 |
+| API | 公开 read API 不变；`archive_read_add_passphrase()` 继续拒绝空串，callback 返回的空串仍可作为候选；有可靠 check 的 RAR5 会遍历密码候选 |
+
+RAR5 password check 和 keyed checksum 依据 RARLAB 公开格式说明、标准 PBKDF2/HMAC 语义及自行生成的 RAR 7.23 黑盒向量独立实现，没有复制或派生 UnRAR 源码。RAR5 KDF 同时产生 AES key、额外 16 轮后的 hash key、额外 32 轮后的 folded password check；keyed CRC32 和 BLAKE2sp 使用 HMAC-SHA256 验证。
+
+实现设置了以下资源边界：7z AES cycle power 和 RAR5 KDF exponent 最大为 24；加密 header 最大 2 MiB；所有 CBC 输入必须最终按 16-byte block 对齐。CBC update 对精确大小输出缓冲区进行显式容量计算，release 会拒绝残留的不完整 block。
+
+### 8.2 提交拆分
+
+实现从基线 `27cbc7827172698143e440801fc0ba39ccb4f1f5` 开始，按以下逻辑层拆分本地提交：
+
+1. 计划与基线；
+2. secret helper、CBC、PBKDF2、HMAC、7z KDF；
+3. 7z AES data/header reader；
+4. RAR5 KDF、data/header reader；
+5. 通用 UTF-16LE、SHA-1 clone、RAR3 KDF；
+6. RAR3/4 data/header reader；
+7. RAR3/4 solid state；
+8. CBC 输出边界、RAR5 encrypted QuickOpen；
+9. RAR5 password check 与 keyed checksum。
+
+没有推送远端、创建 PR 或改写历史，也没有修改 Maou Console。
+
+### 8.3 fixture 与兼容性验证
+
+- 现有 7z data/header/partial-encryption fixture 已从“识别后拒绝”改为验证实际明文；
+- RAR4 的 data、encrypted filenames、solid data、solid encrypted filenames 四组 fixture 均验证全部 entry；
+- RAR5 的对应四组 fixture 均验证全部 entry；
+- 新增 RAR 7.23 `-hp -qo+` encrypted QuickOpen fixture，覆盖只列目录和自动跳过 service data；
+- 新增 RAR 7.23 `-p -m0 -htb -qo-` fixture，覆盖错误密码、多候选密码、stored data、keyed BLAKE2sp 和密文 bit flip；
+- 用 7-Zip 生成 `密碼🔒` 的 AES-256 + encrypted header + LZMA2/BCJ 包，fork 提取结果 SHA-256 与源文件一致；
+- 用 RAR 7.23 生成 `密碼🔒` 的 RAR5 encrypted-header 包，列目录和提取均成功。
+
+### 8.4 最终验收结果
+
+- Apple CommonCrypto Debug 全量 `libarchive_test`：862 tests passed，0 failures；49 项为既有平台或外部工具 skip；
+- RAR/RAR5 精确回归：110 tests passed，0 failures，4 skips；
+- ASan + UBSan 的 7z/RAR/RAR5 矩阵：149 tests passed，0 failures，5 skips，14,791,160 assertions；Apple ASan 不支持 leak detector，因此显式使用 `detect_leaks=0`，其余错误保持 `halt_on_error=1`；
+- OpenSSL 3.6.1 强制编译和运行时 smoke：AES-CBC、PBKDF2-HMAC-SHA256、HMAC-SHA256、RAR5 key/password-check/keyed-CRC 向量全部通过；
+- `git diff --check` 通过，工作树在每次提交后保持干净。
+
+### 8.5 保留边界
+
+- 本轮只实现 reader，不实现加密写包；
+- RAR7 compression version 1、加密多卷包没有纳入本轮支持承诺；
+- RAR3/4 encrypted solid 的专用 fixture 覆盖 LZ/Huffman 路径；PPMd/filter 的状态保留由代码和既有非加密回归覆盖，但尚缺专用的 encrypted-solid PPMd/filter 生成样本；
+- KDF exponent 上限 24 是桌面安全边界，进入 iOS 产品前仍应按真机时间、峰值内存和取消体验复核；
+- Maou Console 的 binary target、符号隔离、错误映射和外部工具 feature flag 仍按第 6 节作为后续集成工作。
+
+## 9. 参考
 
 - libarchive 3.8.9 release: <https://github.com/libarchive/libarchive/releases/tag/v3.8.9>
 - libarchive encrypted 7z/RAR issue: <https://github.com/libarchive/libarchive/issues/2516>
