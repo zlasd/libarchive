@@ -38,6 +38,7 @@
 #endif
 
 #include "archive.h"
+#include "archive_cryptor_private.h"
 #ifndef HAVE_ZLIB_H
 #include "archive_crc32.h"
 #endif
@@ -46,6 +47,8 @@
 #include "archive_entry_locale.h"
 #include "archive_integer.h"
 #include "archive_ppmd7_private.h"
+#include "archive_rar_crypto_private.h"
+#include "archive_read_private.h"
 #include "archive_entry_private.h"
 #include "archive_time_private.h"
 
@@ -316,6 +319,37 @@ struct multivolume {
 	uint8_t* push_buf;
 };
 
+struct rar5_crypt {
+	uint8_t present;
+	uint8_t tweaked_checksums;
+	uint8_t has_check;
+	uint8_t kdf_count;
+	uint8_t salt[ARCHIVE_RAR5_SALT_SIZE];
+	uint8_t iv[ARCHIVE_RAR5_IV_SIZE];
+	uint8_t check[ARCHIVE_RAR5_CHECK_SIZE];
+	archive_crypto_ctx ctx;
+	int ctx_valid;
+	uint8_t *buffer;
+	uint8_t *buffer_ptr;
+	size_t buffer_size;
+	size_t bytes_avail;
+	int64_t ciphertext_remaining;
+};
+
+struct rar5_header_crypt {
+	uint8_t key[ARCHIVE_RAR5_KEY_SIZE];
+	uint8_t salt[ARCHIVE_RAR5_SALT_SIZE];
+	uint8_t check[ARCHIVE_RAR5_CHECK_SIZE];
+	uint8_t kdf_count;
+	uint8_t has_check;
+	uint8_t key_valid;
+	uint8_t active;
+	uint8_t *buffer;
+	size_t buffer_size;
+	size_t size;
+	size_t offset;
+};
+
 /* Main context structure. */
 struct rar5 {
 	int header_initialized;
@@ -356,6 +390,8 @@ struct rar5 {
 	struct file_header file;
 	struct bit_reader bits;
 	struct multivolume vol;
+	struct rar5_crypt crypt;
+	struct rar5_header_crypt header_crypt;
 
 	/* The header of currently processed RARv5 block. Used in main
 	 * decompression logic loop. */
@@ -377,6 +413,8 @@ static int push_data_ready(struct archive_read* a, struct rar5 *rar5,
 	const uint8_t* buf, size_t size, int64_t offset);
 static void clear_data_ready_stack(struct rar5 *rar5);
 static void rar5_deinit(struct rar5 *rar5);
+static int rar5_finish_data_decryption(struct archive_read *, struct rar5 *);
+static int rar5_prepare_encrypted_header(struct archive_read *, struct rar5 *);
 
 /* CDE_xxx = Circular Double Ended (Queue) return values. */
 enum CDE_RETURN_VALUES {
@@ -870,6 +908,23 @@ static void free_filters(struct rar5 *rar5) {
 }
 
 static void reset_file_context(struct rar5 *rar5) {
+	if (rar5->crypt.ctx_valid) {
+		archive_decrypto_aes_cbc_release(&rar5->crypt.ctx);
+		rar5->crypt.ctx_valid = 0;
+	}
+	if (rar5->crypt.buffer != NULL)
+		__archive_cryptor_secure_zero(rar5->crypt.buffer,
+		    rar5->crypt.buffer_size);
+	rar5->crypt.buffer_ptr = rar5->crypt.buffer;
+	rar5->crypt.bytes_avail = 0;
+	rar5->crypt.ciphertext_remaining = 0;
+	rar5->crypt.present = 0;
+	rar5->crypt.tweaked_checksums = 0;
+	rar5->crypt.has_check = 0;
+	rar5->crypt.kdf_count = 0;
+	memset(rar5->crypt.salt, 0, sizeof(rar5->crypt.salt));
+	memset(rar5->crypt.iv, 0, sizeof(rar5->crypt.iv));
+	memset(rar5->crypt.check, 0, sizeof(rar5->crypt.check));
 	memset(&rar5->file, 0, sizeof(rar5->file));
 	blake2sp_init(&rar5->file.b2state, 32);
 
@@ -899,11 +954,121 @@ static inline int get_archive_read(struct archive* a,
 	return ARCHIVE_OK;
 }
 
+static int
+rar5_fill_data_decryption(struct archive_read *a, struct rar5 *rar5,
+    size_t how_many)
+{
+	const uint8_t *ciphertext;
+	size_t needed, raw_size, out_size;
+	uint8_t *new_buffer;
+
+	if (how_many <= rar5->crypt.bytes_avail)
+		return (1);
+	if ((uint64_t)(how_many - rar5->crypt.bytes_avail) >
+	    (uint64_t)rar5->crypt.ciphertext_remaining)
+		return (0);
+	needed = how_many - rar5->crypt.bytes_avail;
+	raw_size = needed < 64 * 1024 ? 64 * 1024 : needed;
+	if (raw_size > (uint64_t)rar5->crypt.ciphertext_remaining)
+		raw_size = (size_t)rar5->crypt.ciphertext_remaining;
+	if (archive_ckd_add_size(&raw_size, raw_size,
+	    ARCHIVE_RAR5_IV_SIZE - 1))
+		return (0);
+	raw_size &= ~(size_t)(ARCHIVE_RAR5_IV_SIZE - 1);
+	if (raw_size > (uint64_t)rar5->crypt.ciphertext_remaining)
+		raw_size = (size_t)rar5->crypt.ciphertext_remaining;
+	if (raw_size == 0 || (raw_size & (ARCHIVE_RAR5_IV_SIZE - 1)) != 0)
+		return (0);
+
+	if (rar5->crypt.bytes_avail != 0 &&
+	    rar5->crypt.buffer_ptr != rar5->crypt.buffer)
+		memmove(rar5->crypt.buffer, rar5->crypt.buffer_ptr,
+		    rar5->crypt.bytes_avail);
+	if (rar5->crypt.buffer_size - rar5->crypt.bytes_avail < raw_size) {
+		size_t new_size;
+
+		if (archive_ckd_add_size(&new_size, rar5->crypt.bytes_avail,
+		    raw_size))
+			return (0);
+		new_buffer = realloc(rar5->crypt.buffer, new_size);
+		if (new_buffer == NULL) {
+			archive_set_error(&a->archive, ENOMEM,
+			    "No memory for RAR5 decryption");
+			return (0);
+		}
+		rar5->crypt.buffer = new_buffer;
+		rar5->crypt.buffer_size = new_size;
+	}
+	rar5->crypt.buffer_ptr = rar5->crypt.buffer;
+
+	ciphertext = __archive_read_ahead(a, raw_size, NULL);
+	if (ciphertext == NULL)
+		return (0);
+	out_size = rar5->crypt.buffer_size - rar5->crypt.bytes_avail;
+	if (archive_decrypto_aes_cbc_update(&rar5->crypt.ctx, ciphertext,
+	    raw_size, rar5->crypt.buffer + rar5->crypt.bytes_avail,
+	    &out_size) != 0 || out_size != raw_size)
+		return (0);
+	if (__archive_read_consume(a, raw_size) != (int64_t)raw_size)
+		return (0);
+	rar5->crypt.ciphertext_remaining -= raw_size;
+	rar5->crypt.bytes_avail += out_size;
+	return (rar5->crypt.bytes_avail >= how_many);
+}
+
 static int read_ahead(struct archive_read* a, size_t how_many,
     const uint8_t** ptr)
 {
+	struct rar5 *rar5 = a->format->data;
+
 	if(!ptr)
 		return 0;
+	if (rar5->header_crypt.active) {
+		if (how_many > rar5->header_crypt.size -
+		    rar5->header_crypt.offset + 10) {
+			*ptr = NULL;
+			return (0);
+		}
+		*ptr = rar5->header_crypt.buffer + rar5->header_crypt.offset;
+		return (1);
+	}
+	if (rar5->crypt.ctx_valid) {
+		if (!rar5_fill_data_decryption(a, rar5, how_many)) {
+			/* The RAR5 bit reader requests up to four lookahead bytes
+			 * beyond a compressed block. Ciphertext padding is not part
+			 * of that block, so provide a zeroed safety extension without
+			 * making it consumable. */
+			if (rar5->crypt.ciphertext_remaining == 0 &&
+			    how_many <= rar5->crypt.bytes_avail + 8) {
+				size_t required = rar5->crypt.bytes_avail + 8;
+				uint8_t *new_buffer;
+
+				if (rar5->crypt.bytes_avail != 0 &&
+				    rar5->crypt.buffer_ptr != rar5->crypt.buffer)
+					memmove(rar5->crypt.buffer,
+					    rar5->crypt.buffer_ptr,
+					    rar5->crypt.bytes_avail);
+				if (rar5->crypt.buffer_size < required) {
+					new_buffer = realloc(rar5->crypt.buffer,
+					    required);
+					if (new_buffer == NULL) {
+						*ptr = NULL;
+						return (0);
+					}
+					rar5->crypt.buffer = new_buffer;
+					rar5->crypt.buffer_size = required;
+				}
+				rar5->crypt.buffer_ptr = rar5->crypt.buffer;
+				memset(rar5->crypt.buffer +
+				    rar5->crypt.bytes_avail, 0, 8);
+			} else {
+				*ptr = NULL;
+				return (0);
+			}
+		}
+		*ptr = rar5->crypt.buffer_ptr;
+		return (1);
+	}
 
 	*ptr = __archive_read_ahead(a, how_many, NULL);
 	if(*ptr == NULL) {
@@ -914,7 +1079,24 @@ static int read_ahead(struct archive_read* a, size_t how_many,
 }
 
 static int consume(struct archive_read* a, int64_t how_many) {
+	struct rar5 *rar5 = a->format->data;
 	int ret;
+
+	if (rar5->header_crypt.active) {
+		if (how_many < 0 || (uint64_t)how_many >
+		    rar5->header_crypt.size - rar5->header_crypt.offset)
+			return (ARCHIVE_FATAL);
+		rar5->header_crypt.offset += (size_t)how_many;
+		return (ARCHIVE_OK);
+	}
+	if (rar5->crypt.ctx_valid) {
+		if (how_many < 0 ||
+		    (uint64_t)how_many > rar5->crypt.bytes_avail)
+			return (ARCHIVE_FATAL);
+		rar5->crypt.buffer_ptr += (size_t)how_many;
+		rar5->crypt.bytes_avail -= (size_t)how_many;
+		return (ARCHIVE_OK);
+	}
 
 	ret = how_many == __archive_read_consume(a, how_many)
 		? ARCHIVE_OK
@@ -1602,6 +1784,84 @@ static int parse_file_extra_owner(struct archive_read* a,
 	return ARCHIVE_OK;
 }
 
+static int
+rar5_crypt_vint(const uint8_t **p, const uint8_t *end, uint64_t *value)
+{
+	uint64_t result = 0;
+	unsigned shift = 0, i;
+
+	for (i = 0; i < 10 && *p < end; i++, shift += 7) {
+		uint8_t b = *(*p)++;
+
+		if (shift == 63 && (b & 0x7e) != 0)
+			return (0);
+		result |= (uint64_t)(b & 0x7f) << shift;
+		if ((b & 0x80) == 0) {
+			*value = result;
+			return (1);
+		}
+	}
+	return (0);
+}
+
+static int
+parse_file_extra_crypt(struct archive_read *a, struct archive_entry *entry,
+    struct rar5 *rar5, int64_t *extra_data_size, uint64_t field_size)
+{
+	const uint8_t *p, *end;
+	uint64_t version, flags;
+	size_t expected;
+
+	if (*extra_data_size < 0 || field_size > (uint64_t)*extra_data_size ||
+	    field_size > SIZE_MAX ||
+	    !read_ahead(a, (size_t)field_size, &p))
+		return (ARCHIVE_EOF);
+	end = p + (size_t)field_size;
+	if (!rar5_crypt_vint(&p, end, &version) || version != 0 ||
+	    !rar5_crypt_vint(&p, end, &flags) || (flags & ~UINT64_C(3)) != 0 ||
+	    p == end) {
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
+		    "Malformed RAR5 encryption record");
+		return (ARCHIVE_FATAL);
+	}
+	rar5->crypt.kdf_count = *p++;
+	rar5->crypt.has_check = (uint8_t)((flags & 1) != 0);
+	rar5->crypt.tweaked_checksums = (uint8_t)((flags & 2) != 0);
+	expected = ARCHIVE_RAR5_SALT_SIZE + ARCHIVE_RAR5_IV_SIZE +
+	    (rar5->crypt.has_check ? ARCHIVE_RAR5_CHECK_SIZE : 0);
+	if ((size_t)(end - p) != expected ||
+	    rar5->crypt.kdf_count > ARCHIVE_RAR5_MAX_KDF_COUNT) {
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
+		    "Malformed RAR5 encryption record");
+		return (ARCHIVE_FATAL);
+	}
+	memcpy(rar5->crypt.salt, p, ARCHIVE_RAR5_SALT_SIZE);
+	p += ARCHIVE_RAR5_SALT_SIZE;
+	memcpy(rar5->crypt.iv, p, ARCHIVE_RAR5_IV_SIZE);
+	p += ARCHIVE_RAR5_IV_SIZE;
+	if (rar5->crypt.has_check) {
+		memcpy(rar5->crypt.check, p, ARCHIVE_RAR5_CHECK_SIZE);
+		if (!__archive_rar5_check_value_is_valid(rar5->crypt.check)) {
+			archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
+			    "Damaged RAR5 password check value");
+			return (ARCHIVE_FATAL);
+		}
+	}
+	if (consume(a, (int64_t)field_size) != ARCHIVE_OK)
+		return (ARCHIVE_EOF);
+	*extra_data_size -= (int64_t)field_size;
+	rar5->crypt.present = 1;
+	rar5->cstate.data_encrypted = 1;
+	rar5->has_encrypted_entries = 1;
+	if (rar5->crypt.tweaked_checksums) {
+		/* These values are keyed and cannot be compared as plain hashes. */
+		rar5->file.stored_crc32 = 0;
+		rar5->file.has_blake2 = 0;
+	}
+	archive_entry_set_is_data_encrypted(entry, 1);
+	return (ARCHIVE_OK);
+}
+
 static int process_head_file_extra(struct archive_read* a,
     struct archive_entry* e, struct rar5 *rar5, int64_t extra_data_size)
 {
@@ -1653,11 +1913,9 @@ static int process_head_file_extra(struct archive_read* a,
 				    &extra_data_size);
 				break;
 			case EX_CRYPT:
-				/* Mark the entry as encrypted */
-				archive_entry_set_is_data_encrypted(e, 1);
-				rar5->has_encrypted_entries = 1;
-				rar5->cstate.data_encrypted = 1;
-				/* fallthrough */
+				ret = parse_file_extra_crypt(a, e, rar5,
+				    &extra_data_size, extra_field_size);
+				break;
 			case EX_SUBDATA:
 				/* fallthrough */
 			default:
@@ -1755,6 +2013,8 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 	};
 
 	archive_entry_clear(entry);
+	if (rar5->headers_are_encrypted)
+		archive_entry_set_is_metadata_encrypted(entry, 1);
 
 	/* Do not reset file context if we're switching archives. */
 	if(!rar5->cstate.switch_multivolume) {
@@ -2022,7 +2282,7 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 	}
 
 	if(file_flags & CRC32) {
-		rar5->file.stored_crc32 = crc;
+		rar5->file.stored_crc32 = rar5->crypt.tweaked_checksums ? 0 : crc;
 	}
 
 	if(!rar5->cstate.switch_multivolume) {
@@ -4080,6 +4340,15 @@ static int do_unstore_file(struct archive_read* a,
 	}
 
 	to_read = rar5_min(rar5->file.bytes_remaining, 64 * 1024);
+	if (rar5->crypt.ctx_valid && !rar5->file.service) {
+		int64_t logical_remaining = rar5->file.unpacked_size -
+		    rar5->cstate.last_unstore_ptr;
+
+		if (logical_remaining < 0)
+			return (ARCHIVE_FATAL);
+		if (to_read > (uint64_t)logical_remaining)
+			to_read = (size_t)logical_remaining;
+	}
 	if(to_read == 0) {
 		return ARCHIVE_EOF;
 	}
@@ -4255,6 +4524,82 @@ static int verify_global_checksums(struct archive_read* a) {
 	return verify_checksums(a);
 }
 
+static int
+rar5_init_data_decryption(struct archive_read *a, struct rar5 *rar5)
+{
+	uint8_t key[ARCHIVE_RAR5_KEY_SIZE];
+	const char *passphrase;
+	int r;
+
+	if (rar5->crypt.ctx_valid)
+		return (ARCHIVE_OK);
+	if (!rar5->crypt.present) {
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
+		    "Missing RAR5 encryption record");
+		return (ARCHIVE_FATAL);
+	}
+	if (rar5->file.bytes_remaining <= 0 ||
+	    (rar5->file.bytes_remaining & (ARCHIVE_RAR5_IV_SIZE - 1)) != 0) {
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
+		    "Encrypted RAR5 data is not block aligned");
+		return (ARCHIVE_FAILED);
+	}
+	__archive_read_reset_passphrase(a);
+	passphrase = __archive_read_next_passphrase(a);
+	if (passphrase == NULL) {
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+		    "Passphrase required for encrypted RAR5 entry");
+		return (ARCHIVE_FAILED);
+	}
+	r = __archive_rar5_derive_key(passphrase, rar5->crypt.salt,
+	    rar5->crypt.kdf_count, key);
+	if (r != 0) {
+		__archive_cryptor_secure_zero(key, sizeof(key));
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+		    r == CRYPTOR_STUB_FUNCTION ?
+		    "RAR5 decryption is unsupported by this build" :
+		    "Failed to derive RAR5 encryption key");
+		return (ARCHIVE_FAILED);
+	}
+	r = archive_decrypto_aes_cbc_init(&rar5->crypt.ctx, key,
+	    sizeof(key), rar5->crypt.iv);
+	__archive_cryptor_secure_zero(key, sizeof(key));
+	if (r != 0) {
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+		    "Failed to initialize RAR5 decryption");
+		return (ARCHIVE_FAILED);
+	}
+	rar5->crypt.ctx_valid = 1;
+	rar5->crypt.buffer_ptr = rar5->crypt.buffer;
+	rar5->crypt.bytes_avail = 0;
+	rar5->crypt.ciphertext_remaining = rar5->file.bytes_remaining;
+	return (ARCHIVE_OK);
+}
+
+static int
+rar5_finish_data_decryption(struct archive_read *a, struct rar5 *rar5)
+{
+	int r = ARCHIVE_OK;
+
+	if (!rar5->crypt.ctx_valid)
+		return (ARCHIVE_OK);
+	if (rar5->crypt.ciphertext_remaining > 0 &&
+	    __archive_read_consume(a, rar5->crypt.ciphertext_remaining) !=
+	    rar5->crypt.ciphertext_remaining)
+		r = ARCHIVE_FATAL;
+	rar5->crypt.ciphertext_remaining = 0;
+	if (rar5->crypt.buffer != NULL)
+		__archive_cryptor_secure_zero(rar5->crypt.buffer,
+		    rar5->crypt.buffer_size);
+	rar5->crypt.buffer_ptr = rar5->crypt.buffer;
+	rar5->crypt.bytes_avail = 0;
+	if (archive_decrypto_aes_cbc_release(&rar5->crypt.ctx) != 0)
+		r = ARCHIVE_FATAL;
+	rar5->crypt.ctx_valid = 0;
+	rar5->file.bytes_remaining = 0;
+	return (r);
+}
+
 /*
  * Decryption function for the magic signature pattern. Check the comment near
  * the `rar5_signature_xor` symbol to read the rationale behind this.
@@ -4279,10 +4624,10 @@ static int rar5_read_data(struct archive_read *a, const void **buff,
 		rar5->has_encrypted_entries = 0;
 	}
 
-	if (rar5->headers_are_encrypted || rar5->cstate.data_encrypted) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
-		    "Reading encrypted data is not currently supported");
-		return ARCHIVE_FAILED;
+	if (rar5->cstate.data_encrypted && !rar5->file.eof) {
+		ret = rar5_init_data_decryption(a, rar5);
+		if (ret != ARCHIVE_OK)
+			return (ret);
 	}
 
 	if(rar5->file.dir > 0) {
@@ -4309,9 +4654,25 @@ static int rar5_read_data(struct archive_read *a, const void **buff,
 	if(rar5->file.eof == 1) {
 		return ARCHIVE_EOF;
 	}
+	if (rar5->crypt.ctx_valid &&
+	    ((rar5->cstate.method == 0 &&
+	      rar5->cstate.last_unstore_ptr == rar5->file.unpacked_size) ||
+	     (rar5->cstate.method != 0 &&
+	      rar5->cstate.last_write_ptr == rar5->file.unpacked_size))) {
+		ret = rar5_finish_data_decryption(a, rar5);
+		if (ret != ARCHIVE_OK)
+			return (ret);
+		rar5->file.eof = 1;
+		return verify_global_checksums(a);
+	}
 
 	ret = do_unpack(a, rar5, buff, size, offset);
 	if(ret != ARCHIVE_OK) {
+		if (rar5->crypt.ctx_valid) {
+			(void)rar5_finish_data_decryption(a, rar5);
+			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+			    "Incorrect passphrase or damaged encrypted RAR5 entry");
+		}
 		return ret;
 	}
 
@@ -4336,7 +4697,7 @@ static int rar5_read_data(struct archive_read *a, const void **buff,
 static int rar5_read_data_skip(struct archive_read *a) {
 	struct rar5 *rar5 = a->format->data;
 
-	if(rar5->main.solid && (rar5->cstate.data_encrypted == 0)) {
+	if(rar5->main.solid) {
 		/* In solid archives, instead of skipping the data, we need to
 		 * extract it, and dispose the result. The side effect of this
 		 * operation will be setting up the initial window buffer state
@@ -4372,6 +4733,8 @@ static int rar5_read_data_skip(struct archive_read *a) {
 				return ret;
 			}
 		}
+	} else if (rar5->crypt.ctx_valid) {
+		return (rar5_finish_data_decryption(a, rar5));
 	} else {
 		/* In standard archives, we can just jump over the compressed
 		 * stream. Each file in non-solid archives starts from an empty
@@ -4403,6 +4766,19 @@ static int64_t rar5_seek_data(struct archive_read *a, int64_t offset,
 
 static int rar5_cleanup(struct archive_read *a) {
 	struct rar5 *rar5 = a->format->data;
+
+	if (rar5->crypt.ctx_valid)
+		archive_decrypto_aes_cbc_release(&rar5->crypt.ctx);
+	if (rar5->crypt.buffer != NULL)
+		__archive_cryptor_secure_zero(rar5->crypt.buffer,
+		    rar5->crypt.buffer_size);
+	free(rar5->crypt.buffer);
+	__archive_cryptor_secure_zero(rar5->header_crypt.key,
+	    sizeof(rar5->header_crypt.key));
+	if (rar5->header_crypt.buffer != NULL)
+		__archive_cryptor_secure_zero(rar5->header_crypt.buffer,
+		    rar5->header_crypt.buffer_size);
+	free(rar5->header_crypt.buffer);
 
 	free(rar5->cstate.window_buf);
 	free(rar5->cstate.filtered_buf);
