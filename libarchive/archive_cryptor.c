@@ -715,14 +715,19 @@ aes_cbc_decrypt_update(archive_crypto_ctx *ctx, const uint8_t *in,
     size_t in_len, uint8_t *out, size_t *out_len)
 {
 	CCCryptorStatus status;
-	size_t required, written = 0;
+	size_t pending, required, total, written = 0;
 
-	required = CCCryptorGetOutputLength(ctx->ctx, in_len, false);
+	pending = ctx->encr_pos;
+	if (in_len > SIZE_MAX - pending)
+		return -1;
+	total = pending + in_len;
+	required = total & ~(size_t)(AES_BLOCK_SIZE - 1);
 	if (required > *out_len)
 		return -1;
 	status = CCCryptorUpdate(ctx->ctx, in, in_len, out, *out_len, &written);
-	if (status != kCCSuccess)
+	if (status != kCCSuccess || written != required)
 		return -1;
+	ctx->encr_pos = total & (AES_BLOCK_SIZE - 1);
 	*out_len = written;
 	return 0;
 }
@@ -730,10 +735,12 @@ aes_cbc_decrypt_update(archive_crypto_ctx *ctx, const uint8_t *in,
 static int
 aes_cbc_decrypt_release(archive_crypto_ctx *ctx)
 {
+	int incomplete = ctx->encr_pos != 0;
+
 	if (ctx->ctx != NULL)
 		CCCryptorRelease(ctx->ctx);
 	__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
-	return 0;
+	return incomplete ? -1 : 0;
 }
 
 #elif defined(ARCHIVE_CRYPTOR_USE_OPENSSL)
@@ -773,12 +780,20 @@ aes_cbc_decrypt_update(archive_crypto_ctx *ctx, const uint8_t *in,
     size_t in_len, uint8_t *out, size_t *out_len)
 {
 	int written;
+	size_t pending, required, total;
 
-	if (in_len > INT_MAX || in_len > SIZE_MAX - AES_BLOCK_SIZE ||
-	    *out_len < in_len + AES_BLOCK_SIZE)
+	pending = ctx->encr_pos;
+	if (in_len > INT_MAX || in_len > SIZE_MAX - pending)
+		return -1;
+	total = pending + in_len;
+	required = total & ~(size_t)(AES_BLOCK_SIZE - 1);
+	if (*out_len < required)
 		return -1;
 	if (EVP_DecryptUpdate(ctx->ctx, out, &written, in, (int)in_len) != 1)
 		return -1;
+	if (written < 0 || (size_t)written != required)
+		return -1;
+	ctx->encr_pos = total & (AES_BLOCK_SIZE - 1);
 	*out_len = (size_t)written;
 	return 0;
 }
@@ -786,9 +801,11 @@ aes_cbc_decrypt_update(archive_crypto_ctx *ctx, const uint8_t *in,
 static int
 aes_cbc_decrypt_release(archive_crypto_ctx *ctx)
 {
+	int incomplete = ctx->encr_pos != 0;
+
 	EVP_CIPHER_CTX_free(ctx->ctx);
 	__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
-	return 0;
+	return incomplete ? -1 : 0;
 }
 
 #else

@@ -299,6 +299,15 @@ test_aes_cbc(const unsigned char *key, size_t key_len,
 	assertEqualMem(plaintext, actual, actual_len);
 	assertEqualInt(0, archive_decrypto_aes_cbc_release(&ctx));
 	assertMemoryFilledWith(&ctx, sizeof(ctx), 0);
+
+	memset(&ctx, 0, sizeof(ctx));
+	assertEqualInt(0, archive_decrypto_aes_cbc_init(&ctx, key, key_len, iv));
+	actual_len = sizeof(actual);
+	assertEqualInt(0, archive_decrypto_aes_cbc_update(&ctx, ciphertext, 1,
+	    actual, &actual_len));
+	assertEqualInt(0, actual_len);
+	assert(archive_decrypto_aes_cbc_release(&ctx) != 0);
+	assertMemoryFilledWith(&ctx, sizeof(ctx), 0);
 }
 
 DEFINE_TEST(test_archive_cryptor_aes128_cbc)
