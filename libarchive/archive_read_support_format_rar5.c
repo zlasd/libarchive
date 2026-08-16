@@ -37,7 +37,10 @@
 #include <limits.h>
 #endif
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
 #include <os/proc.h>
+#endif
 #endif
 
 #include "archive.h"
@@ -2122,7 +2125,7 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 		return ARCHIVE_FATAL;
 	}
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && TARGET_OS_IOS
 	/* Avoid a jetsam kill when a valid archive requests more than half of
 	 * the memory currently available to this process. */
 	if(window_size > 0 &&
