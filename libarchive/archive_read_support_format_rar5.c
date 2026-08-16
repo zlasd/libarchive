@@ -2087,7 +2087,8 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 	c_method = (int) (compression_info >> 7) & 0x7;
 	c_version = (int) (compression_info & 0x3f);
 
-	/* RAR5 seems to limit the dictionary size to 64MB. */
+	/* Modern RAR5 writers can emit 128 MiB dictionaries. Keep a bounded
+	 * ceiling so hostile archives cannot request unbounded memory. */
 	window_size = (rar5->file.dir > 0) ?
 		0 :
 		g_unpack_window_size << ((compression_info >> 10) & 15);
@@ -2109,7 +2110,7 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 
 	/* Check if window_size is a sane value. Also, if the file is not
 	 * declared as a directory, disallow window_size == 0. */
-	if(window_size > (64 * 1024 * 1024) ||
+	if(window_size > (128 * 1024 * 1024) ||
 	    (rar5->file.dir == 0 && window_size == 0))
 	{
 		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
