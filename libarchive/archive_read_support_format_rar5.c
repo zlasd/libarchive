@@ -36,6 +36,9 @@
 #ifdef HAVE_LIMITS_H
 #include <limits.h>
 #endif
+#if defined(__APPLE__)
+#include <os/proc.h>
+#endif
 
 #include "archive.h"
 #include "archive_cryptor_private.h"
@@ -65,6 +68,7 @@
 #define rar5_min(a, b) (((a) > (b)) ? (b) : (a))
 #define rar5_max(a, b) (((a) > (b)) ? (a) : (b))
 #define rar5_countof(X) ((const ssize_t) (sizeof(X) / sizeof(*X)))
+#define RAR5_MAX_DICTIONARY_SIZE ((size_t) 512 * 1024 * 1024)
 
 #if defined DEBUG
 #define DEBUG_CODE if(1)
@@ -2087,7 +2091,7 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 	c_method = (int) (compression_info >> 7) & 0x7;
 	c_version = (int) (compression_info & 0x3f);
 
-	/* Modern RAR5 writers can emit 128 MiB dictionaries. Keep a bounded
+	/* Modern RAR5 writers can emit large dictionaries. Keep a bounded
 	 * ceiling so hostile archives cannot request unbounded memory. */
 	window_size = (rar5->file.dir > 0) ?
 		0 :
@@ -2110,13 +2114,24 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 
 	/* Check if window_size is a sane value. Also, if the file is not
 	 * declared as a directory, disallow window_size == 0. */
-	if(window_size > (128 * 1024 * 1024) ||
+	if(window_size > RAR5_MAX_DICTIONARY_SIZE ||
 	    (rar5->file.dir == 0 && window_size == 0))
 	{
 		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
 		    "Declared dictionary size is not supported");
 		return ARCHIVE_FATAL;
 	}
+
+#if defined(__APPLE__)
+	/* Avoid a jetsam kill when a valid archive requests more than half of
+	 * the memory currently available to this process. */
+	if(window_size > 0 &&
+	    window_size > os_proc_available_memory() / 2) {
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
+		    "Declared dictionary exceeds available process memory");
+		return ARCHIVE_FATAL;
+	}
+#endif
 
 	if(rar5->file.solid > 0) {
 		/* Re-check if current window size is the same as previous
