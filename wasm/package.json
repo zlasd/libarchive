@@ -1,0 +1,24 @@
+{
+  "name": "@maou-console/libarchive-wasm",
+  "version": "0.1.0",
+  "description": "Browser and worker bindings for Maou Console's libarchive encryption checks",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.d.ts",
+    "index.mjs",
+    "maou-libarchive-core.mjs",
+    "maou-libarchive-core.wasm",
+    "README.md",
+    "COPYING",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses"
+  ],
+  "sideEffects": false,
+  "license": "BSD-2-Clause"
+}
