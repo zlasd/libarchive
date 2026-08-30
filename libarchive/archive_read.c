@@ -877,6 +877,71 @@ archive_read_detect_encrypted_entries(struct archive *_a)
 	}
 }
 
+static int
+passphrase_failure_status(struct archive_read *a, int saw_encryption)
+{
+	int encrypted = archive_read_has_encrypted_entries(&a->archive);
+
+	if (encrypted == ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED)
+		return (ARCHIVE_READ_PASSPHRASE_UNSUPPORTED);
+	if (saw_encryption || encrypted > 0 || a->passphrases.requested) {
+		if (a->passphrases.supplied)
+			return (ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED);
+		return (ARCHIVE_READ_PASSPHRASE_REQUIRED);
+	}
+	return (ARCHIVE_READ_PASSPHRASE_DONT_KNOW);
+}
+
+int
+archive_read_validate_passphrase(struct archive *_a)
+{
+	struct archive_read *a = (struct archive_read *)_a;
+	struct archive_entry *entry;
+	char buffer[64 * 1024];
+	la_ssize_t bytes;
+	int encrypted, r, saw_encryption = 0;
+
+	if (__archive_check_magic(_a, ARCHIVE_READ_MAGIC,
+	    ARCHIVE_STATE_HEADER | ARCHIVE_STATE_DATA,
+	    "archive_read_validate_passphrase") != ARCHIVE_OK)
+		return (ARCHIVE_READ_PASSPHRASE_DONT_KNOW);
+
+	for (;;) {
+		entry = NULL;
+		r = archive_read_next_header(_a, &entry);
+		encrypted = archive_read_has_encrypted_entries(_a);
+		if (encrypted > 0 ||
+		    (entry != NULL && archive_entry_is_encrypted(entry) > 0))
+			saw_encryption = 1;
+
+		if (r == ARCHIVE_EOF)
+			break;
+		if (r != ARCHIVE_OK)
+			return (passphrase_failure_status(a, saw_encryption));
+
+		for (;;) {
+			bytes = archive_read_data(_a, buffer, sizeof(buffer));
+			if (bytes > 0)
+				continue;
+			if (bytes == 0)
+				break;
+			return (passphrase_failure_status(a, saw_encryption));
+		}
+	}
+
+	encrypted = archive_read_has_encrypted_entries(_a);
+	if (saw_encryption || encrypted > 0) {
+		if (a->passphrases.supplied)
+			return (ARCHIVE_READ_PASSPHRASE_VALID);
+		return (ARCHIVE_READ_PASSPHRASE_REQUIRED);
+	}
+	if (encrypted == ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED)
+		return (ARCHIVE_READ_PASSPHRASE_UNSUPPORTED);
+	if (encrypted == 0)
+		return (ARCHIVE_READ_PASSPHRASE_NOT_NEEDED);
+	return (ARCHIVE_READ_PASSPHRASE_DONT_KNOW);
+}
+
 /*
  * Returns a bitmask of capabilities that are supported by the archive format reader.
  * If the reader has no special capabilities, ARCHIVE_READ_FORMAT_CAPS_NONE is returned.

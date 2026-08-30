@@ -410,6 +410,14 @@ typedef const char *archive_passphrase_callback(struct archive *,
 #define ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED -2
 #define ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW -1
 
+/* Codes returned by archive_read_validate_passphrase(). */
+#define ARCHIVE_READ_PASSPHRASE_UNSUPPORTED -2
+#define ARCHIVE_READ_PASSPHRASE_DONT_KNOW -1
+#define ARCHIVE_READ_PASSPHRASE_NOT_NEEDED 0
+#define ARCHIVE_READ_PASSPHRASE_REQUIRED 1
+#define ARCHIVE_READ_PASSPHRASE_VALID 2
+#define ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED 3
+
 /*-
  * Basic outline for reading an archive:
  *   1) Ask archive_read_new for an archive reader object.
@@ -642,6 +650,15 @@ __LA_DECL int	archive_read_has_encrypted_entries(struct archive *);
  * answer can be produced.
  */
 __LA_DECL int	archive_read_detect_encrypted_entries(struct archive *);
+
+/*
+ * Consume every entry and verify configured passphrases against encrypted
+ * metadata and data.  Passphrases must be registered before opening the
+ * archive.  The function intentionally reads entry bodies to completion so
+ * CRCs and authentication codes are checked; the reader must be reopened
+ * before extraction.
+ */
+__LA_DECL int	archive_read_validate_passphrase(struct archive *);
 
 /*
  * Returns a bitmask of capabilities that are supported by the archive format reader.

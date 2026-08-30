@@ -158,6 +158,22 @@ when the scan is inconclusive, or
 when the selected format cannot report encryption.
 The reader is left at the point where the answer was obtained and must be
 reopened before extraction.
+.Pp
+After registering candidate passphrases and opening a fresh reader,
+.Fn archive_read_validate_passphrase
+consumes every entry body to verify encrypted metadata, checksums, and
+authentication codes.
+It returns one of
+.Dv ARCHIVE_READ_PASSPHRASE_NOT_NEEDED ,
+.Dv ARCHIVE_READ_PASSPHRASE_REQUIRED ,
+.Dv ARCHIVE_READ_PASSPHRASE_VALID ,
+.Dv ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED ,
+.Dv ARCHIVE_READ_PASSPHRASE_DONT_KNOW ,
+or
+.Dv ARCHIVE_READ_PASSPHRASE_UNSUPPORTED .
+Some encrypted formats cannot distinguish an incorrect passphrase from
+damaged ciphertext, so the API deliberately reports the combined result.
+The reader must again be reopened before extraction.
 .\"
 .Ss Release resources
 See
