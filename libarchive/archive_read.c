@@ -838,6 +838,46 @@ archive_read_has_encrypted_entries(struct archive *_a)
 }
 
 /*
+ * Resolve the passive encryption state by walking the archive.  Calling
+ * archive_read_next_header() is intentional: encrypted metadata can prevent
+ * a format reader from producing an entry at all, while still allowing it to
+ * set its format-specific has_encrypted_entries flag before returning an
+ * error.
+ */
+int
+archive_read_detect_encrypted_entries(struct archive *_a)
+{
+	struct archive_entry *entry;
+	int encrypted, r;
+
+	if (__archive_check_magic(_a, ARCHIVE_READ_MAGIC,
+	    ARCHIVE_STATE_ANY, "archive_read_detect_encrypted_entries") !=
+	    ARCHIVE_OK)
+		return (ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW);
+
+	for (;;) {
+		entry = NULL;
+		r = archive_read_next_header(_a, &entry);
+		encrypted = archive_read_has_encrypted_entries(_a);
+
+		if (encrypted > 0 ||
+		    (entry != NULL && archive_entry_is_encrypted(entry) > 0))
+			return (1);
+
+		if (r == ARCHIVE_EOF) {
+			if (encrypted ==
+			    ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED)
+				return (encrypted);
+			/* A complete scan without an encrypted entry is decisive. */
+			return (0);
+		}
+
+		if (r < ARCHIVE_WARN)
+			return (ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW);
+	}
+}
+
+/*
  * Returns a bitmask of capabilities that are supported by the archive format reader.
  * If the reader has no special capabilities, ARCHIVE_READ_FORMAT_CAPS_NONE is returned.
  */

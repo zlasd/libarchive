@@ -33,6 +33,7 @@ IF(ENABLE_TEST)
     test_archive_pathmatch.c
     test_archive_pathmatch_oob.c
     test_archive_read.c
+    test_archive_read_detect_encrypted_entries.c
     test_archive_read_add_passphrase.c
     test_archive_read_close_twice.c
     test_archive_read_multiple_data_objects.c

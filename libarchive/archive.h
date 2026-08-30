@@ -631,6 +631,19 @@ __LA_DECL la_int64_t		 archive_read_header_position(struct archive *);
 __LA_DECL int	archive_read_has_encrypted_entries(struct archive *);
 
 /*
+ * Actively consume archive headers until encryption is found or the archive
+ * reaches EOF.  Unlike archive_read_has_encrypted_entries(), this function
+ * advances the reader and must only be used when the caller does not intend
+ * to extract from the same handle afterwards.
+ *
+ * Returns 1 when encrypted data or metadata is found, 0 when a complete scan
+ * proves that the selected format contains no encrypted entries, or one of
+ * ARCHIVE_READ_FORMAT_ENCRYPTION_{DONT_KNOW,UNSUPPORTED} when no reliable
+ * answer can be produced.
+ */
+__LA_DECL int	archive_read_detect_encrypted_entries(struct archive *);
+
+/*
  * Returns a bitmask of capabilities that are supported by the archive format reader.
  * If the reader has no special capabilities, ARCHIVE_READ_FORMAT_CAPS_NONE is returned.
  */

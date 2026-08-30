@@ -2575,6 +2575,12 @@ process_head_crypt(struct archive_read *a, struct rar5 *rar5,
 	int had_passphrase = 0, r;
 	unsigned retry = 0;
 
+	/* Reaching an archive encryption header is already conclusive.  Record
+	 * that fact before requesting a passphrase so callers can distinguish a
+	 * password-protected archive from malformed input even when no header can
+	 * be decrypted yet. */
+	rar5->has_encrypted_entries = 1;
+
 	if (!read_var(a, &version, NULL) || version != 0 ||
 	    !read_var(a, &flags, NULL) || (flags & ~UINT64_C(1)) != 0 ||
 	    !read_ahead(a, 1, &p)) {
