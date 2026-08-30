@@ -1,4 +1,4 @@
-import createCoreModule from "./maou-libarchive-core.mjs";
+import createCoreModule from "./libarchive-password-core.mjs";
 
 export const EncryptionStatus = Object.freeze({
   UNSUPPORTED: -2,
@@ -41,29 +41,29 @@ function normalizeBytes(input) {
   throw new TypeError("Archive input must be an ArrayBuffer or typed array");
 }
 
-export async function createMaouArchive(options = {}) {
+export async function createArchivePasswordChecker(options = {}) {
   const core = await createCoreModule(options);
-  const detectMemory = core.cwrap("maou_archive_detect_encryption", "number", [
+  const detectMemory = core.cwrap("libarchive_password_detect_encryption", "number", [
     "number",
     "number",
   ]);
   const validateMemory = core.cwrap(
-    "maou_archive_validate_passphrase",
+    "libarchive_password_validate_passphrase",
     "number",
     ["number", "number", "string"],
   );
   const detectPathCore = core.cwrap(
-    "maou_archive_detect_encryption_path",
+    "libarchive_password_detect_encryption_path",
     "number",
     ["string"],
   );
   const validatePathCore = core.cwrap(
-    "maou_archive_validate_passphrase_path",
+    "libarchive_password_validate_passphrase_path",
     "number",
     ["string", "string"],
   );
-  const lastErrorPointer = core.cwrap("maou_archive_last_error", "number", []);
-  const versionPointer = core.cwrap("maou_archive_version", "number", []);
+  const lastErrorPointer = core.cwrap("libarchive_password_last_error", "number", []);
+  const versionPointer = core.cwrap("libarchive_password_version", "number", []);
 
   function result(code, names) {
     const errorPointer = lastErrorPointer();

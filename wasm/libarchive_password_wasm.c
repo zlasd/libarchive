@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2026 Maou Console contributors
+ * Copyright (c) 2026 libarchive-password-wasm contributors
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -23,14 +23,14 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MAOU_ARCHIVE_ERROR_CAPACITY 512
+#define LIBARCHIVE_PASSWORD_ERROR_CAPACITY 512
 
-static char maou_archive_error[MAOU_ARCHIVE_ERROR_CAPACITY];
+static char libarchive_password_error[LIBARCHIVE_PASSWORD_ERROR_CAPACITY];
 
 static void
 clear_error(void)
 {
-	maou_archive_error[0] = '\0';
+	libarchive_password_error[0] = '\0';
 }
 
 static void
@@ -42,7 +42,8 @@ capture_error(struct archive *a, const char *fallback)
 		message = fallback;
 	if (message == NULL)
 		message = "Unknown archive error";
-	snprintf(maou_archive_error, sizeof(maou_archive_error), "%s", message);
+	snprintf(libarchive_password_error, sizeof(libarchive_password_error),
+	    "%s", message);
 }
 
 static struct archive *
@@ -148,39 +149,39 @@ run_path(const char *path, const char *passphrase, int validate)
 }
 
 EMSCRIPTEN_KEEPALIVE int
-maou_archive_detect_encryption(const void *data, size_t size)
+libarchive_password_detect_encryption(const void *data, size_t size)
 {
 	return (run_memory(data, size, NULL, 0));
 }
 
 EMSCRIPTEN_KEEPALIVE int
-maou_archive_validate_passphrase(const void *data, size_t size,
+libarchive_password_validate_passphrase(const void *data, size_t size,
     const char *passphrase)
 {
 	return (run_memory(data, size, passphrase, 1));
 }
 
 EMSCRIPTEN_KEEPALIVE int
-maou_archive_detect_encryption_path(const char *path)
+libarchive_password_detect_encryption_path(const char *path)
 {
 	return (run_path(path, NULL, 0));
 }
 
 EMSCRIPTEN_KEEPALIVE int
-maou_archive_validate_passphrase_path(const char *path,
+libarchive_password_validate_passphrase_path(const char *path,
     const char *passphrase)
 {
 	return (run_path(path, passphrase, 1));
 }
 
 EMSCRIPTEN_KEEPALIVE const char *
-maou_archive_last_error(void)
+libarchive_password_last_error(void)
 {
-	return (maou_archive_error);
+	return (libarchive_password_error);
 }
 
 EMSCRIPTEN_KEEPALIVE const char *
-maou_archive_version(void)
+libarchive_password_version(void)
 {
 	return (archive_version_string());
 }

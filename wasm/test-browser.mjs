@@ -62,7 +62,7 @@ if (address === null || typeof address === "string") {
 }
 
 const url = `http://127.0.0.1:${address.port}/wasm/test-browser.html`;
-const profile = await mkdtemp(`${tmpdir()}${sep}maou-wasm-chrome-`);
+const profile = await mkdtemp(`${tmpdir()}${sep}libarchive-wasm-chrome-`);
 const browser = spawn(chrome, [
   "--headless=new",
   "--disable-gpu",

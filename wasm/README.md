@@ -1,17 +1,17 @@
-# Maou libarchive WebAssembly package
+# libarchive-password-wasm
 
-This package exposes the active encryption detection and full passphrase
-validation APIs from Maou Console's libarchive fork. It supports ZIP (including
-Traditional PKWARE and WinZip AES), 7z, RAR4, and RAR5 packages.
+This package exposes libarchive's active encryption detection and full
+passphrase validation APIs through WebAssembly. It supports ZIP (including
+Traditional PKWARE and WinZip AES), 7z, RAR4, and RAR5 archives.
 
 ```js
 import {
-  createMaouArchive,
+  createArchivePasswordChecker,
   EncryptionStatus,
   PassphraseStatus,
-} from "@maou-console/libarchive-wasm";
+} from "libarchive-password-wasm";
 
-const archive = await createMaouArchive();
+const archive = await createArchivePasswordChecker();
 const bytes = new Uint8Array(await file.arrayBuffer());
 
 if (archive.detectEncryption(bytes).code === EncryptionStatus.PRESENT) {
@@ -31,7 +31,7 @@ mount the object with Emscripten WorkerFS. Then call `detectPath` and
 `validatePath`; this avoids copying the entire package into WebAssembly memory:
 
 ```js
-const archive = await createMaouArchive();
+const archive = await createArchivePasswordChecker();
 archive.FS.mkdir("/upload");
 archive.FS.mount(
   archive.FS.filesystems.WORKERFS,

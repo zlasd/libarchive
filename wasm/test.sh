@@ -5,7 +5,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 FIXTURE_DIR="$SCRIPT_DIR/build/fixtures"
 
-if [ ! -f "$SCRIPT_DIR/dist/package/maou-libarchive-core.wasm" ]; then
+if [ ! -f "$SCRIPT_DIR/dist/package/libarchive-password-core.wasm" ]; then
 	echo "error: run ./wasm/build.sh before testing" >&2
 	exit 1
 fi

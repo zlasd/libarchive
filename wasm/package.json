@@ -1,7 +1,7 @@
 {
-  "name": "@maou-console/libarchive-wasm",
+  "name": "libarchive-password-wasm",
   "version": "0.1.0",
-  "description": "Browser and worker bindings for Maou Console's libarchive encryption checks",
+  "description": "WebAssembly bindings for libarchive encryption and passphrase checks",
   "type": "module",
   "exports": {
     ".": {
@@ -12,13 +12,19 @@
   "files": [
     "index.d.ts",
     "index.mjs",
-    "maou-libarchive-core.mjs",
-    "maou-libarchive-core.wasm",
+    "libarchive-password-core.mjs",
+    "libarchive-password-core.wasm",
     "README.md",
     "COPYING",
     "THIRD_PARTY_NOTICES.md",
     "licenses"
   ],
   "sideEffects": false,
-  "license": "BSD-2-Clause"
+  "license": "BSD-2-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zlasd/libarchive.git",
+    "directory": "wasm"
+  },
+  "bugs": "https://github.com/zlasd/libarchive/issues"
 }

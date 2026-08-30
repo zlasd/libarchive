@@ -1,5 +1,5 @@
 import {
-  createMaouArchive,
+  createArchivePasswordChecker,
   EncryptionStatus,
   PassphraseStatus,
 } from "./dist/package/index.mjs";
@@ -13,7 +13,7 @@ try {
 
   const blob = await response.blob();
   postMessage({ progress: "loading WebAssembly" });
-  const archive = await createMaouArchive();
+  const archive = await createArchivePasswordChecker();
   const mountPoint = "/upload";
   const archivePath = `${mountPoint}/encrypted.7z`;
 

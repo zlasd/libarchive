@@ -22,7 +22,7 @@ export interface ArchiveCheckResult {
 
 export type ArchiveBytes = ArrayBuffer | ArrayBufferView;
 
-export interface MaouArchive {
+export interface ArchivePasswordChecker {
   readonly version: string;
   detectEncryption(input: ArchiveBytes): ArchiveCheckResult;
   validatePassphrase(
@@ -34,12 +34,12 @@ export interface MaouArchive {
   readonly FS: unknown;
 }
 
-export interface MaouArchiveModuleOptions {
+export interface ArchivePasswordCheckerOptions {
   locateFile?: (path: string, prefix: string) => string;
   wasmBinary?: ArrayBufferView;
   [key: string]: unknown;
 }
 
-export declare function createMaouArchive(
-  options?: MaouArchiveModuleOptions,
-): Promise<MaouArchive>;
+export declare function createArchivePasswordChecker(
+  options?: ArchivePasswordCheckerOptions,
+): Promise<ArchivePasswordChecker>;

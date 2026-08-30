@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import {
-  createMaouArchive,
+  createArchivePasswordChecker,
   EncryptionStatus,
   PassphraseStatus,
 } from "./dist/package/index.mjs";
@@ -13,7 +13,7 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const fixtureDirectory = join(scriptDirectory, "build", "fixtures");
 
 const fixture = async (name) => readFile(join(fixtureDirectory, name));
-const archive = await createMaouArchive();
+const archive = await createArchivePasswordChecker();
 
 assert.match(archive.version, /^libarchive 3\.8\.9/);
 

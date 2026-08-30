@@ -3,8 +3,8 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-BUILD_ROOT=${MAOU_WASM_BUILD_ROOT:-"$SCRIPT_DIR/build"}
-DIST_ROOT=${MAOU_WASM_DIST_ROOT:-"$SCRIPT_DIR/dist"}
+BUILD_ROOT=${LIBARCHIVE_PASSWORD_WASM_BUILD_ROOT:-"$SCRIPT_DIR/build"}
+DIST_ROOT=${LIBARCHIVE_PASSWORD_WASM_DIST_ROOT:-"$SCRIPT_DIR/dist"}
 
 XZ_VERSION=5.8.3
 XZ_ARCHIVE="xz-$XZ_VERSION.tar.gz"
@@ -182,7 +182,7 @@ cmake -E make_directory "$PACKAGE_DIR" "$LICENSE_DIR"
 
 emcc -O3 -flto --no-entry \
 	-I"$SOURCE_ROOT/libarchive" \
-	"$SCRIPT_DIR/maou_archive_wasm.c" \
+	"$SCRIPT_DIR/libarchive_password_wasm.c" \
 	"$ARCHIVE_BUILD/libarchive/libarchive.a" \
 	"$XZ_INSTALL/lib/liblzma.a" \
 	"$MBEDTLS_INSTALL/lib/libmbedcrypto.a" \
@@ -192,7 +192,7 @@ emcc -O3 -flto --no-entry \
 	-sSTRICT=1 \
 	-sMODULARIZE=1 \
 	-sEXPORT_ES6=1 \
-	-sEXPORT_NAME=createMaouArchiveCore \
+	-sEXPORT_NAME=createLibarchivePasswordCore \
 	-sENVIRONMENT=web,worker,node \
 	-sFILESYSTEM=1 \
 	-sALLOW_MEMORY_GROWTH=1 \
@@ -200,9 +200,9 @@ emcc -O3 -flto --no-entry \
 	-sMAXIMUM_MEMORY=2147483648 \
 	-sSTACK_SIZE=1048576 \
 	-sASSERTIONS=1 \
-	"-sEXPORTED_FUNCTIONS=['_malloc','_free','_maou_archive_detect_encryption','_maou_archive_validate_passphrase','_maou_archive_detect_encryption_path','_maou_archive_validate_passphrase_path','_maou_archive_last_error','_maou_archive_version']" \
+	"-sEXPORTED_FUNCTIONS=['_malloc','_free','_libarchive_password_detect_encryption','_libarchive_password_validate_passphrase','_libarchive_password_detect_encryption_path','_libarchive_password_validate_passphrase_path','_libarchive_password_last_error','_libarchive_password_version']" \
 	"-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','FS','HEAPU8']" \
-	-o "$PACKAGE_DIR/maou-libarchive-core.mjs"
+	-o "$PACKAGE_DIR/libarchive-password-core.mjs"
 
 cmake -E copy "$SCRIPT_DIR/index.mjs" "$PACKAGE_DIR/index.mjs"
 cmake -E copy "$SCRIPT_DIR/index.d.ts" "$PACKAGE_DIR/index.d.ts"
@@ -222,8 +222,8 @@ cmake -E copy \
 	"$EM_CACHE_ROOT/ports/bzip2/bzip2-$BZIP2_VERSION/LICENSE" \
 	"$LICENSE_DIR/bzip2-$BZIP2_VERSION.txt"
 
-cmake -E remove -f "$DIST_ROOT/maou-console-libarchive-wasm-0.1.0.tgz"
+cmake -E remove -f "$DIST_ROOT/libarchive-password-wasm-0.1.0.tgz"
 (cd "$PACKAGE_DIR" && npm pack --pack-destination "$DIST_ROOT")
 
 echo "WASM package: $PACKAGE_DIR"
-echo "npm archive:  $DIST_ROOT/maou-console-libarchive-wasm-0.1.0.tgz"
+echo "npm archive:  $DIST_ROOT/libarchive-password-wasm-0.1.0.tgz"
