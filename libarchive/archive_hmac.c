@@ -368,6 +368,47 @@ __hmac_sha256_cleanup(archive_hmac_sha256_ctx *ctx)
 	memset(ctx, 0, sizeof(*ctx));
 }
 
+#elif defined(HAVE_LIBMBEDCRYPTO) && defined(HAVE_MBEDTLS_MD_H)
+
+static int
+__hmac_sha256_init(archive_hmac_sha256_ctx *ctx, const uint8_t *key,
+    size_t key_len)
+{
+	const mbedtls_md_info_t *info;
+
+	mbedtls_md_init(ctx);
+	info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+	if (info == NULL || mbedtls_md_setup(ctx, info, 1) != 0 ||
+	    mbedtls_md_hmac_starts(ctx, key, key_len) != 0) {
+		mbedtls_md_free(ctx);
+		return -1;
+	}
+	return 0;
+}
+
+static void
+__hmac_sha256_update(archive_hmac_sha256_ctx *ctx, const uint8_t *data,
+    size_t data_len)
+{
+	(void)mbedtls_md_hmac_update(ctx, data, data_len);
+}
+
+static void
+__hmac_sha256_final(archive_hmac_sha256_ctx *ctx, uint8_t *out,
+    size_t *out_len)
+{
+	if (*out_len < 32 || mbedtls_md_hmac_finish(ctx, out) != 0)
+		*out_len = 0;
+	else
+		*out_len = 32;
+}
+
+static void
+__hmac_sha256_cleanup(archive_hmac_sha256_ctx *ctx)
+{
+	mbedtls_md_free(ctx);
+}
+
 #elif defined(HAVE_LIBCRYPTO)
 
 static int

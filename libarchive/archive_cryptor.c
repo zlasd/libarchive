@@ -303,6 +303,32 @@ pbkdf2_sha256(const char *pw, size_t pw_len, const uint8_t *salt,
 	    0 : -1;
 }
 
+#elif defined(HAVE_LIBMBEDCRYPTO) && defined(HAVE_MBEDTLS_PKCS5_H)
+
+static int
+pbkdf2_sha256(const char *pw, size_t pw_len, const uint8_t *salt,
+    size_t salt_len, unsigned rounds, uint8_t *derived_key,
+    size_t derived_key_len)
+{
+	mbedtls_md_context_t ctx;
+	const mbedtls_md_info_t *info;
+	int ret;
+
+	mbedtls_md_init(&ctx);
+	info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+	if (info == NULL) {
+		mbedtls_md_free(&ctx);
+		return (-1);
+	}
+	ret = mbedtls_md_setup(&ctx, info, 1);
+	if (ret == 0)
+		ret = mbedtls_pkcs5_pbkdf2_hmac(&ctx,
+		    (const unsigned char *)pw, pw_len, salt, salt_len,
+		    rounds, derived_key_len, derived_key);
+	mbedtls_md_free(&ctx);
+	return (ret);
+}
+
 #else
 
 static int
@@ -739,6 +765,86 @@ aes_cbc_decrypt_release(archive_crypto_ctx *ctx)
 
 	if (ctx->ctx != NULL)
 		CCCryptorRelease(ctx->ctx);
+	__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
+	return incomplete ? -1 : 0;
+}
+
+#elif defined(ARCHIVE_CRYPTOR_USE_MBED)
+
+static int
+aes_cbc_decrypt_init(archive_crypto_ctx *ctx, const uint8_t *key,
+    size_t key_len, const uint8_t *iv)
+{
+	if (key_len != 16 && key_len != 24 && key_len != 32)
+		return -1;
+
+	memset(ctx, 0, sizeof(*ctx));
+	mbedtls_aes_init(&ctx->ctx);
+	if (mbedtls_aes_setkey_dec(&ctx->ctx, key,
+	    (unsigned int)key_len * 8) != 0) {
+		mbedtls_aes_free(&ctx->ctx);
+		__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
+		return -1;
+	}
+	memcpy(ctx->key, key, key_len);
+	ctx->key_len = (unsigned)key_len;
+	memcpy(ctx->nonce, iv, AES_BLOCK_SIZE);
+	return 0;
+}
+
+static int
+aes_cbc_decrypt_update(archive_crypto_ctx *ctx, const uint8_t *in,
+    size_t in_len, uint8_t *out, size_t *out_len)
+{
+	size_t available, blocks, needed, pending, written = 0;
+
+	pending = ctx->encr_pos;
+	if (in_len > SIZE_MAX - pending)
+		return -1;
+	available = pending + in_len;
+	needed = available & ~(size_t)(AES_BLOCK_SIZE - 1);
+	if (*out_len < needed)
+		return -1;
+
+	if (pending != 0) {
+		size_t fill = AES_BLOCK_SIZE - pending;
+
+		if (fill > in_len) {
+			memcpy(ctx->encr_buf + pending, in, in_len);
+			ctx->encr_pos = pending + in_len;
+			*out_len = 0;
+			return 0;
+		}
+		memcpy(ctx->encr_buf + pending, in, fill);
+		if (mbedtls_aes_crypt_cbc(&ctx->ctx, MBEDTLS_AES_DECRYPT,
+		    AES_BLOCK_SIZE, ctx->nonce, ctx->encr_buf, out) != 0)
+			return -1;
+		in += fill;
+		in_len -= fill;
+		written = AES_BLOCK_SIZE;
+	}
+
+	blocks = in_len & ~(size_t)(AES_BLOCK_SIZE - 1);
+	if (blocks != 0 && mbedtls_aes_crypt_cbc(&ctx->ctx,
+	    MBEDTLS_AES_DECRYPT, blocks, ctx->nonce, in,
+	    out + written) != 0)
+		return -1;
+	written += blocks;
+	in += blocks;
+	in_len -= blocks;
+	if (in_len != 0)
+		memcpy(ctx->encr_buf, in, in_len);
+	ctx->encr_pos = in_len;
+	*out_len = written;
+	return 0;
+}
+
+static int
+aes_cbc_decrypt_release(archive_crypto_ctx *ctx)
+{
+	int incomplete = ctx->encr_pos != 0;
+
+	mbedtls_aes_free(&ctx->ctx);
 	__archive_cryptor_secure_zero(ctx, sizeof(*ctx));
 	return incomplete ? -1 : 0;
 }

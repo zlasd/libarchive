@@ -69,7 +69,7 @@ typedef int archive_hmac_sha256_ctx;
 #include <mbedtls/md.h>
 
 typedef mbedtls_md_context_t archive_hmac_sha1_ctx;
-typedef int archive_hmac_sha256_ctx;
+typedef mbedtls_md_context_t archive_hmac_sha256_ctx;
 
 #elif defined(HAVE_LIBNETTLE) && defined(HAVE_NETTLE_HMAC_H)
 #include <nettle/hmac.h>
