@@ -17,6 +17,9 @@
  */
 #include "test.h"
 
+struct archive_read;
+extern const char *__archive_read_next_passphrase(struct archive_read *);
+
 static int
 detect_encryption(const char *filename)
 {
@@ -30,6 +33,33 @@ detect_encryption(const char *filename)
 	assertEqualIntA(a, ARCHIVE_OK,
 	    archive_read_open_filename(a, filename, 10240));
 	result = archive_read_detect_encrypted_entries(a);
+	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
+	return (result);
+}
+
+static int
+detect_after_passphrase_request(void)
+{
+	static const char invalid_archive[] = "not an archive";
+	struct archive *a;
+	struct archive_read *reader;
+	int result;
+
+	assert((a = archive_read_new()) != NULL);
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_filter_all(a));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_all(a));
+	assertEqualIntA(a, ARCHIVE_OK,
+	    archive_read_open_memory(a, invalid_archive,
+	        sizeof(invalid_archive) - 1));
+
+	/*
+	 * Isolate the state produced when a format reader asks for a password
+	 * before it can expose an entry or set its encryption flag.
+	 */
+	reader = (struct archive_read *)a;
+	assertEqualString(NULL, __archive_read_next_passphrase(reader));
+	result = archive_read_detect_encrypted_entries(a);
+
 	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
 	return (result);
 }
@@ -61,4 +91,7 @@ DEFINE_TEST(test_archive_read_detect_encrypted_entries)
 	    detect_encryption("test_read_format_rar4_encrypted_filenames.rar"));
 	assertEqualInt(1,
 	    detect_encryption("test_read_format_rar5_encrypted_filenames.rar"));
+
+	/* A password request is decisive even if format detection then fails. */
+	assertEqualInt(1, detect_after_passphrase_request());
 }

@@ -847,6 +847,7 @@ archive_read_has_encrypted_entries(struct archive *_a)
 int
 archive_read_detect_encrypted_entries(struct archive *_a)
 {
+	struct archive_read *a = (struct archive_read *)_a;
 	struct archive_entry *entry;
 	int encrypted, r;
 
@@ -860,7 +861,12 @@ archive_read_detect_encrypted_entries(struct archive *_a)
 		r = archive_read_next_header(_a, &entry);
 		encrypted = archive_read_has_encrypted_entries(_a);
 
-		if (encrypted > 0 ||
+		/*
+		 * A passphrase request is itself decisive evidence of encryption.
+		 * Some format readers need the passphrase before they can expose an
+		 * entry or update their format-specific encryption state.
+		 */
+		if (a->passphrases.requested || encrypted > 0 ||
 		    (entry != NULL && archive_entry_is_encrypted(entry) > 0))
 			return (1);
 
