@@ -41,6 +41,9 @@ archive.FS.mount(
 
 const detection = archive.detectPath("/upload/game.7z");
 const validation = archive.validatePath("/upload/game.7z", password);
+const listing = archive.listPath("/upload/game.7z", password);
+if (!listing.ok) throw new Error(listing.error ?? "Could not list archive");
+console.log(listing.entries);
 archive.FS.unmount("/upload");
 ```
 

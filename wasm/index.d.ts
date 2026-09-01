@@ -20,6 +20,12 @@ export interface ArchiveCheckResult {
   readonly error: string | null;
 }
 
+export interface ArchiveListResult {
+  readonly ok: boolean;
+  readonly entries: readonly string[];
+  readonly error: string | null;
+}
+
 export type ArchiveBytes = ArrayBuffer | ArrayBufferView;
 
 export interface ArchivePasswordChecker {
@@ -31,6 +37,7 @@ export interface ArchivePasswordChecker {
   ): ArchiveCheckResult;
   detectPath(path: string): ArchiveCheckResult;
   validatePath(path: string, passphrase?: string | null): ArchiveCheckResult;
+  listPath(path: string, passphrase?: string | null): ArchiveListResult;
   readonly FS: unknown;
 }
 

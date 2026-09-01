@@ -200,7 +200,7 @@ emcc -O3 -flto --no-entry \
 	-sMAXIMUM_MEMORY=2147483648 \
 	-sSTACK_SIZE=1048576 \
 	-sASSERTIONS=1 \
-	"-sEXPORTED_FUNCTIONS=['_malloc','_free','_libarchive_password_detect_encryption','_libarchive_password_validate_passphrase','_libarchive_password_detect_encryption_path','_libarchive_password_validate_passphrase_path','_libarchive_password_last_error','_libarchive_password_version']" \
+	"-sEXPORTED_FUNCTIONS=['_malloc','_free','_libarchive_password_detect_encryption','_libarchive_password_validate_passphrase','_libarchive_password_detect_encryption_path','_libarchive_password_validate_passphrase_path','_libarchive_password_list_path','_libarchive_password_list_count','_libarchive_password_list_entry','_libarchive_password_last_error','_libarchive_password_version']" \
 	"-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','FS','HEAPU8']" \
 	-o "$PACKAGE_DIR/libarchive-password-core.mjs"
 

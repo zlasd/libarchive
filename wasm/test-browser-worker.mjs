@@ -28,15 +28,19 @@ try {
   const detected = archive.detectPath(archivePath);
   const accepted = archive.validatePath(archivePath, "12345678");
   const rejected = archive.validatePath(archivePath, "wrong");
+  const listed = archive.listPath(archivePath, "12345678");
   archive.FS.unmount(mountPoint);
 
   if (
     detected.code !== EncryptionStatus.PRESENT ||
     accepted.code !== PassphraseStatus.VALID ||
-    rejected.code !== PassphraseStatus.INVALID_OR_DAMAGED
+    rejected.code !== PassphraseStatus.INVALID_OR_DAMAGED ||
+    !listed.ok ||
+    listed.entries.length !== 1 ||
+    listed.entries[0] !== "bar.txt"
   ) {
     throw new Error(
-      `Unexpected results: ${JSON.stringify({ detected, accepted, rejected })}`,
+      `Unexpected results: ${JSON.stringify({ detected, accepted, rejected, listed })}`,
     );
   }
 

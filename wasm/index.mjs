@@ -62,6 +62,17 @@ export async function createArchivePasswordChecker(options = {}) {
     "number",
     ["string", "string"],
   );
+  const listPathCore = core.cwrap(
+    "libarchive_password_list_path",
+    "number",
+    ["string", "string"],
+  );
+  const listCountCore = core.cwrap("libarchive_password_list_count", "number", []);
+  const listEntryPointer = core.cwrap(
+    "libarchive_password_list_entry",
+    "number",
+    ["number"],
+  );
   const lastErrorPointer = core.cwrap("libarchive_password_last_error", "number", []);
   const versionPointer = core.cwrap("libarchive_password_version", "number", []);
 
@@ -106,6 +117,24 @@ export async function createArchivePasswordChecker(options = {}) {
     },
     validatePath(path, passphrase = null) {
       return result(validatePathCore(path, passphrase), passphraseNames);
+    },
+    listPath(path, passphrase = null) {
+      const code = listPathCore(path, passphrase);
+      const entries = [];
+      if (code === 0) {
+        const count = listCountCore();
+        for (let index = 0; index < count; index += 1) {
+          const pointer = listEntryPointer(index);
+          if (pointer !== 0) entries.push(core.UTF8ToString(pointer));
+        }
+      }
+      const errorPointer = lastErrorPointer();
+      const error = errorPointer === 0 ? "" : core.UTF8ToString(errorPointer);
+      return Object.freeze({
+        ok: code === 0,
+        entries: Object.freeze(entries),
+        error: error || null,
+      });
     },
     FS: core.FS,
   });

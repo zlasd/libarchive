@@ -17,20 +17,77 @@
  */
 
 #include "archive.h"
+#include "archive_entry.h"
 
 #include <emscripten/emscripten.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define LIBARCHIVE_PASSWORD_ERROR_CAPACITY 512
+#define LIBARCHIVE_PASSWORD_LIST_OK 0
+#define LIBARCHIVE_PASSWORD_LIST_ERROR -1
 
 static char libarchive_password_error[LIBARCHIVE_PASSWORD_ERROR_CAPACITY];
+static char **libarchive_password_entries;
+static size_t libarchive_password_entry_count;
+static size_t libarchive_password_entry_capacity;
+
+static void capture_error(struct archive *, const char *);
 
 static void
 clear_error(void)
 {
 	libarchive_password_error[0] = '\0';
+}
+
+static void
+clear_entries(void)
+{
+	size_t index;
+
+	for (index = 0; index < libarchive_password_entry_count; index++)
+		free(libarchive_password_entries[index]);
+	free(libarchive_password_entries);
+	libarchive_password_entries = NULL;
+	libarchive_password_entry_count = 0;
+	libarchive_password_entry_capacity = 0;
+}
+
+static int
+append_entry(const char *path)
+{
+	char **entries;
+	char *copy;
+	size_t capacity, length;
+
+	if (path == NULL)
+		return (ARCHIVE_OK);
+
+	if (libarchive_password_entry_count ==
+	    libarchive_password_entry_capacity) {
+		capacity = libarchive_password_entry_capacity == 0 ? 64 :
+		    libarchive_password_entry_capacity * 2;
+		entries = (char **)realloc(libarchive_password_entries,
+		    capacity * sizeof(*entries));
+		if (entries == NULL) {
+			capture_error(NULL, "Could not allocate the archive file list");
+			return (ARCHIVE_FATAL);
+		}
+		libarchive_password_entries = entries;
+		libarchive_password_entry_capacity = capacity;
+	}
+
+	length = strlen(path) + 1;
+	copy = (char *)malloc(length);
+	if (copy == NULL) {
+		capture_error(NULL, "Could not allocate an archive path");
+		return (ARCHIVE_FATAL);
+	}
+	memcpy(copy, path, length);
+	libarchive_password_entries[libarchive_password_entry_count++] = copy;
+	return (ARCHIVE_OK);
 }
 
 static void
@@ -148,6 +205,57 @@ run_path(const char *path, const char *passphrase, int validate)
 	return (result);
 }
 
+static int
+list_path(const char *path, const char *passphrase)
+{
+	struct archive_entry *entry;
+	struct archive *a;
+	const char *entry_path;
+	int result;
+
+	clear_error();
+	clear_entries();
+	if (path == NULL || path[0] == '\0') {
+		capture_error(NULL, "Archive path is empty");
+		return (LIBARCHIVE_PASSWORD_LIST_ERROR);
+	}
+
+	a = new_reader(passphrase);
+	if (a == NULL)
+		return (LIBARCHIVE_PASSWORD_LIST_ERROR);
+
+	if (archive_read_open_filename(a, path, 64 * 1024) != ARCHIVE_OK) {
+		capture_error(a, "Could not open archive path");
+		archive_read_free(a);
+		return (LIBARCHIVE_PASSWORD_LIST_ERROR);
+	}
+
+	for (;;) {
+		entry = NULL;
+		result = archive_read_next_header(a, &entry);
+		if (result == ARCHIVE_EOF)
+			break;
+		if (result < ARCHIVE_WARN || entry == NULL) {
+			capture_error(a, "Could not read the archive file list");
+			archive_read_free(a);
+			clear_entries();
+			return (LIBARCHIVE_PASSWORD_LIST_ERROR);
+		}
+
+		entry_path = archive_entry_pathname_utf8(entry);
+		if (entry_path == NULL)
+			entry_path = archive_entry_pathname(entry);
+		if (append_entry(entry_path) != ARCHIVE_OK) {
+			archive_read_free(a);
+			clear_entries();
+			return (LIBARCHIVE_PASSWORD_LIST_ERROR);
+		}
+	}
+
+	archive_read_free(a);
+	return (LIBARCHIVE_PASSWORD_LIST_OK);
+}
+
 EMSCRIPTEN_KEEPALIVE int
 libarchive_password_detect_encryption(const void *data, size_t size)
 {
@@ -172,6 +280,26 @@ libarchive_password_validate_passphrase_path(const char *path,
     const char *passphrase)
 {
 	return (run_path(path, passphrase, 1));
+}
+
+EMSCRIPTEN_KEEPALIVE int
+libarchive_password_list_path(const char *path, const char *passphrase)
+{
+	return (list_path(path, passphrase));
+}
+
+EMSCRIPTEN_KEEPALIVE size_t
+libarchive_password_list_count(void)
+{
+	return (libarchive_password_entry_count);
+}
+
+EMSCRIPTEN_KEEPALIVE const char *
+libarchive_password_list_entry(size_t index)
+{
+	if (index >= libarchive_password_entry_count)
+		return (NULL);
+	return (libarchive_password_entries[index]);
 }
 
 EMSCRIPTEN_KEEPALIVE const char *

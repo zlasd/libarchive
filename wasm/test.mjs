@@ -84,7 +84,20 @@ assert.equal(
   archive.validatePath(path, "12345678").code,
   PassphraseStatus.VALID,
 );
+assert.deepEqual(archive.listPath(path, "12345678").entries, ["bar.txt"]);
 archive.FS.unlink(path);
+
+const encryptedHeaderPath = "/encrypted-header.7z";
+archive.FS.writeFile(
+  encryptedHeaderPath,
+  await fixture("test_read_format_7zip_encryption_header.7z"),
+);
+assert.equal(archive.listPath(encryptedHeaderPath).ok, false);
+assert.deepEqual(
+  archive.listPath(encryptedHeaderPath, "12345678").entries,
+  ["bar.txt"],
+);
+archive.FS.unlink(encryptedHeaderPath);
 
 const padded = new Uint8Array(pathFixture.byteLength + 8);
 padded.set(pathFixture, 4);
