@@ -47,6 +47,12 @@ console.log(listing.entries);
 archive.FS.unmount("/upload");
 ```
 
+`validatePath` is optimized for interactive browser preflight: it returns as
+soon as one complete encrypted entry authenticates the supplied passphrase,
+and falls back to full validation only when that probe is inconclusive. The
+native importer remains responsible for validating and extracting every entry.
+`validatePassphrase` retains full-buffer, full-archive validation semantics.
+
 `INVALID_OR_DAMAGED` is intentionally a combined status. Several archive
 formats cannot reliably distinguish an incorrect password from corrupted
 ciphertext after authentication or checksum verification fails.

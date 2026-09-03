@@ -922,7 +922,12 @@ archive_read_validate_passphrase(struct archive *_a)
 
 		if (r == ARCHIVE_EOF)
 			break;
-		if (r != ARCHIVE_OK)
+		/* Header readers may return ARCHIVE_WARN for metadata that is
+		 * unrelated to decryption, such as a pathname that cannot be
+		 * represented in the process locale.  The entry and its payload are
+		 * still readable, so keep validating instead of reporting a valid
+		 * passphrase as invalid. */
+		if (r < ARCHIVE_WARN || entry == NULL)
 			return (passphrase_failure_status(a, saw_encryption));
 
 		for (;;) {

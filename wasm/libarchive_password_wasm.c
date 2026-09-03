@@ -137,6 +137,93 @@ new_reader(const char *passphrase)
 	return (a);
 }
 
+/* Prove that a candidate can decrypt at least one complete encrypted entry.
+ * Browser preflight only needs an interactive password check; scanning every
+ * payload here would effectively decompress the archive twice.  Callers that
+ * need full-archive integrity validation still use
+ * archive_read_validate_passphrase() directly. */
+static int
+probe_passphrase_path(const char *path, const char *passphrase)
+{
+	struct archive_entry *entry;
+	struct archive *a;
+	char buffer[64 * 1024];
+	la_ssize_t bytes;
+	int result, saw_data;
+
+	a = new_reader(passphrase);
+	if (a == NULL)
+		return (ARCHIVE_READ_PASSPHRASE_DONT_KNOW);
+	if (archive_read_open_filename(a, path, 64 * 1024) != ARCHIVE_OK) {
+		capture_error(a, "Could not open archive path");
+		archive_read_free(a);
+		return (ARCHIVE_READ_PASSPHRASE_DONT_KNOW);
+	}
+
+	for (;;) {
+		entry = NULL;
+		result = archive_read_next_header(a, &entry);
+		if (result == ARCHIVE_EOF)
+			break;
+		if (result < ARCHIVE_WARN || entry == NULL) {
+			capture_error(a, "Could not read an encrypted archive entry");
+			archive_read_free(a);
+			return (ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED);
+		}
+		if (archive_entry_is_encrypted(entry) <= 0)
+			continue;
+		/* Successfully decoding an encrypted header already authenticates the
+		 * passphrase through the format's header checksum. Do not inflate a
+		 * potentially huge first payload just to prove the same key twice. */
+		if (archive_entry_is_metadata_encrypted(entry) > 0) {
+			archive_read_free(a);
+			clear_error();
+			return (ARCHIVE_READ_PASSPHRASE_VALID);
+		}
+		/* Prefer a small proof entry when the archive exposes sizes. The next
+		 * header call lets seekable formats skip large packed streams without
+		 * inflating them in WebAssembly. If no smaller proof exists, the full
+		 * validator below remains the fallback. */
+		if (archive_entry_size_is_set(entry) &&
+		    archive_entry_size(entry) > 8 * 1024 * 1024)
+			continue;
+
+		saw_data = 0;
+		for (;;) {
+			bytes = archive_read_data(a, buffer, sizeof(buffer));
+			if (bytes > 0) {
+				saw_data = 1;
+				continue;
+			}
+			if (bytes == 0) {
+				if (saw_data ||
+				    archive_entry_is_metadata_encrypted(entry) > 0) {
+					archive_read_free(a);
+					clear_error();
+					return (ARCHIVE_READ_PASSPHRASE_VALID);
+				}
+				break;
+			}
+			capture_error(a, "Could not decrypt an archive entry");
+			archive_read_free(a);
+			return (ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED);
+		}
+	}
+
+	archive_read_free(a);
+	return (ARCHIVE_READ_PASSPHRASE_DONT_KNOW);
+}
+
+static int
+is_explicit_passphrase_error(const char *message)
+{
+	return (message != NULL &&
+	    (strstr(message, "passphrase") != NULL ||
+	     strstr(message, "Passphrase") != NULL ||
+	     strstr(message, "password") != NULL ||
+	     strstr(message, "Password") != NULL));
+}
+
 static int
 run_memory(const void *data, size_t size, const char *passphrase, int validate)
 {
@@ -175,13 +262,21 @@ static int
 run_path(const char *path, const char *passphrase, int validate)
 {
 	struct archive *a;
-	int result;
+	char validation_error[LIBARCHIVE_PASSWORD_ERROR_CAPACITY];
+	int probe_result, result;
 
 	clear_error();
 	if (path == NULL || path[0] == '\0') {
 		capture_error(NULL, "Archive path is empty");
 		return (validate ? ARCHIVE_READ_PASSPHRASE_DONT_KNOW :
 		    ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW);
+	}
+	if (validate && passphrase != NULL && passphrase[0] != '\0') {
+		probe_result = probe_passphrase_path(path, passphrase);
+		if (probe_result == ARCHIVE_READ_PASSPHRASE_VALID ||
+		    probe_result == ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED)
+			return (probe_result);
+		clear_error();
 	}
 
 	a = new_reader(passphrase);
@@ -199,9 +294,20 @@ run_path(const char *path, const char *passphrase, int validate)
 	result = validate ? archive_read_validate_passphrase(a) :
 	    archive_read_detect_encrypted_entries(a);
 	if (result < 0 || (validate &&
-	    result == ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED))
+	    result == ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED)) {
 		capture_error(a, NULL);
+		snprintf(validation_error, sizeof(validation_error), "%s",
+		    libarchive_password_error);
+	}
 	archive_read_free(a);
+
+	if (validate && passphrase != NULL && passphrase[0] != '\0' &&
+	    result == ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED &&
+	    !is_explicit_passphrase_error(validation_error) &&
+	    probe_passphrase_path(path, passphrase) ==
+	    ARCHIVE_READ_PASSPHRASE_VALID)
+		return (ARCHIVE_READ_PASSPHRASE_VALID);
+
 	return (result);
 }
 
