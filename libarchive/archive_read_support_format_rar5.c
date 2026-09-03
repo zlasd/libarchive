@@ -2127,9 +2127,12 @@ static int process_head_file(struct archive_read* a, struct rar5 *rar5,
 
 #if defined(__APPLE__) && TARGET_OS_IOS
 	/* Avoid a jetsam kill when a valid archive requests more than half of
-	 * the memory currently available to this process. */
-	if(window_size > 0 &&
-	    window_size > os_proc_available_memory() / 2) {
+	 * the memory currently available to this process. A zero result means
+	 * the platform could not report a value (including iOS Simulator), not
+	 * that the process has no memory available. */
+	const size_t available_memory = os_proc_available_memory();
+	if(available_memory > 0 && window_size > 0 &&
+	    window_size > available_memory / 2) {
 		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
 		    "Declared dictionary exceeds available process memory");
 		return ARCHIVE_FATAL;
