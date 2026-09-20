@@ -140,6 +140,8 @@ __archive_read_next_passphrase(struct archive_read *a)
 	struct archive_read_passphrase *p;
 	const char *passphrase;
 
+	a->passphrases.requested = 1;
+
 	if (a->passphrases.candidate < 0) {
 		/* Count out how many passphrases we have. */
 		int cnt = 0;
@@ -184,6 +186,8 @@ __archive_read_next_passphrase(struct archive_read *a)
 		}
 	} else
 		passphrase = NULL;
+	if (passphrase != NULL)
+		a->passphrases.supplied = 1;
 
 	return (passphrase);
 }

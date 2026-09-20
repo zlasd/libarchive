@@ -1,0 +1,30 @@
+{
+  "name": "libarchive-password-wasm",
+  "version": "0.1.0",
+  "description": "WebAssembly bindings for libarchive encryption and passphrase checks",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.d.ts",
+    "index.mjs",
+    "libarchive-password-core.mjs",
+    "libarchive-password-core.wasm",
+    "README.md",
+    "COPYING",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses"
+  ],
+  "sideEffects": false,
+  "license": "BSD-2-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zlasd/libarchive.git",
+    "directory": "wasm"
+  },
+  "bugs": "https://github.com/zlasd/libarchive/issues"
+}

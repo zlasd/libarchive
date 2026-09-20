@@ -445,7 +445,16 @@ static const char *
 default_iconv_charset(const char *charset) {
 	if (charset != NULL && charset[0] != '\0')
 		return charset;
-#if HAVE_LOCALE_CHARSET && HAVE_LOCALCHARSET_H && !defined(__APPLE__)
+#if defined(__APPLE__)
+	/*
+	 * Apple filesystem paths are exposed as UTF-8, while a process starts in
+	 * the C locale until it explicitly calls setlocale().  Treating that
+	 * startup locale as US-ASCII makes hdrcharset conversion drop otherwise
+	 * valid CP932 and GB18030 archive entries in applications that do not
+	 * mutate the process-global locale.
+	 */
+	return "UTF-8";
+#elif HAVE_LOCALE_CHARSET && HAVE_LOCALCHARSET_H
 	/* locale_charset() is broken on Mac OS */
 	return locale_charset();
 #elif HAVE_NL_LANGINFO

@@ -145,6 +145,8 @@ noinst_HEADERS= \
 	libarchive/filter_fork.h
 
 libarchive_la_SOURCES= \
+	libarchive/archive_7zip_crypto.c \
+	libarchive/archive_7zip_crypto_private.h \
 	libarchive/archive_acl.c \
 	libarchive/archive_check_magic.c \
 	libarchive/archive_cmdline.c \
@@ -166,6 +168,8 @@ libarchive_la_SOURCES= \
 	libarchive/archive_ppmd7.c \
 	libarchive/archive_ppmd8.c \
 	libarchive/archive_random.c \
+	libarchive/archive_rar_crypto.c \
+	libarchive/archive_rar_crypto_private.h \
 	libarchive/archive_rb.c \
 	libarchive/archive_read.c \
 	libarchive/archive_read_add_passphrase.c \
@@ -395,6 +399,7 @@ libarchive_test_SOURCES= \
 	libarchive/test/test_archive_api_feature.c \
 	libarchive/test/test_archive_clear_error.c \
 	libarchive/test/test_archive_cmdline.c \
+	libarchive/test/test_archive_cryptor.c \
 	libarchive/test/test_archive_digest.c \
 	libarchive/test/test_archive_match_owner.c \
 	libarchive/test/test_archive_match_path.c \
@@ -403,6 +408,8 @@ libarchive_test_SOURCES= \
 	libarchive/test/test_archive_pathmatch.c \
 	libarchive/test/test_archive_pathmatch_oob.c \
 	libarchive/test/test_archive_read.c \
+	libarchive/test/test_archive_read_detect_encrypted_entries.c \
+	libarchive/test/test_archive_read_validate_passphrase.c \
 	libarchive/test/test_archive_read_add_passphrase.c \
 	libarchive/test/test_archive_read_append_filter.c \
 	libarchive/test/test_archive_read_close_twice.c \
@@ -1036,6 +1043,7 @@ libarchive_test_EXTRA_DIST=\
 	libarchive/test/test_read_format_rar5_unsupported_exfld.rar.uu \
 	libarchive/test/test_read_format_rar5_invalid_hash_valid_htime_exfld.rar.uu \
 	libarchive/test/test_read_format_rar5_encrypted.rar.uu \
+	libarchive/test/test_read_format_rar5_encrypted_lookahead.rar.uu \
 	libarchive/test/test_read_format_rar5_encrypted_filenames.rar.uu \
 	libarchive/test/test_read_format_rar5_solid_encrypted.rar.uu \
 	libarchive/test/test_read_format_rar5_solid_encrypted_filenames.rar.uu \

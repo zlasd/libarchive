@@ -24,6 +24,7 @@ IF(ENABLE_TEST)
     test_archive_api_feature.c
     test_archive_clear_error.c
     test_archive_cmdline.c
+    test_archive_cryptor.c
     test_archive_digest.c
     test_archive_match_owner.c
     test_archive_match_path.c
@@ -32,6 +33,8 @@ IF(ENABLE_TEST)
     test_archive_pathmatch.c
     test_archive_pathmatch_oob.c
     test_archive_read.c
+    test_archive_read_detect_encrypted_entries.c
+    test_archive_read_validate_passphrase.c
     test_archive_read_add_passphrase.c
     test_archive_read_append_filter.c
     test_archive_read_close_twice.c
@@ -395,4 +398,3 @@ IF(ENABLE_TEST)
 	COMMAND	libarchive_test -r ${CMAKE_CURRENT_SOURCE_DIR} -vv)
   ADD_DEPENDENCIES(run_all_tests run_libarchive_test)
 ENDIF(ENABLE_TEST)
-

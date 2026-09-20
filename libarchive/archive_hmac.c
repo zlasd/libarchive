@@ -337,9 +337,196 @@ __hmac_sha1_cleanup(archive_hmac_sha1_ctx *ctx)
 
 #endif
 
+#ifdef ARCHIVE_HMAC_USE_Apple_CommonCrypto
+
+static int
+__hmac_sha256_init(archive_hmac_sha256_ctx *ctx, const uint8_t *key,
+    size_t key_len)
+{
+	CCHmacInit(ctx, kCCHmacAlgSHA256, key, key_len);
+	return 0;
+}
+
+static void
+__hmac_sha256_update(archive_hmac_sha256_ctx *ctx, const uint8_t *data,
+    size_t data_len)
+{
+	CCHmacUpdate(ctx, data, data_len);
+}
+
+static void
+__hmac_sha256_final(archive_hmac_sha256_ctx *ctx, uint8_t *out,
+    size_t *out_len)
+{
+	CCHmacFinal(ctx, out);
+	*out_len = 32;
+}
+
+static void
+__hmac_sha256_cleanup(archive_hmac_sha256_ctx *ctx)
+{
+	memset(ctx, 0, sizeof(*ctx));
+}
+
+#elif defined(HAVE_LIBMBEDCRYPTO) && defined(HAVE_MBEDTLS_MD_H)
+
+static int
+__hmac_sha256_init(archive_hmac_sha256_ctx *ctx, const uint8_t *key,
+    size_t key_len)
+{
+	const mbedtls_md_info_t *info;
+
+	mbedtls_md_init(ctx);
+	info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+	if (info == NULL || mbedtls_md_setup(ctx, info, 1) != 0 ||
+	    mbedtls_md_hmac_starts(ctx, key, key_len) != 0) {
+		mbedtls_md_free(ctx);
+		return -1;
+	}
+	return 0;
+}
+
+static void
+__hmac_sha256_update(archive_hmac_sha256_ctx *ctx, const uint8_t *data,
+    size_t data_len)
+{
+	(void)mbedtls_md_hmac_update(ctx, data, data_len);
+}
+
+static void
+__hmac_sha256_final(archive_hmac_sha256_ctx *ctx, uint8_t *out,
+    size_t *out_len)
+{
+	if (*out_len < 32 || mbedtls_md_hmac_finish(ctx, out) != 0)
+		*out_len = 0;
+	else
+		*out_len = 32;
+}
+
+static void
+__hmac_sha256_cleanup(archive_hmac_sha256_ctx *ctx)
+{
+	mbedtls_md_free(ctx);
+}
+
+#elif defined(HAVE_LIBCRYPTO)
+
+static int
+__hmac_sha256_init(archive_hmac_sha256_ctx *ctx, const uint8_t *key,
+    size_t key_len)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_MAC *mac;
+	char sha256[] = "SHA256";
+	OSSL_PARAM params[] = {
+		OSSL_PARAM_utf8_string("digest", sha256, sizeof(sha256) - 1),
+		OSSL_PARAM_END
+	};
+
+	mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+	*ctx = EVP_MAC_CTX_new(mac);
+	EVP_MAC_free(mac);
+	if (*ctx == NULL)
+		return -1;
+	if (EVP_MAC_init(*ctx, key, key_len, params) != 1) {
+		EVP_MAC_CTX_free(*ctx);
+		*ctx = NULL;
+		return -1;
+	}
+#else
+	*ctx = HMAC_CTX_new();
+	if (*ctx == NULL)
+		return -1;
+	if (HMAC_Init_ex(*ctx, key, (int)key_len, EVP_sha256(), NULL) != 1) {
+		HMAC_CTX_free(*ctx);
+		*ctx = NULL;
+		return -1;
+	}
+#endif
+	return 0;
+}
+
+static void
+__hmac_sha256_update(archive_hmac_sha256_ctx *ctx, const uint8_t *data,
+    size_t data_len)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_MAC_update(*ctx, data, data_len);
+#else
+	HMAC_Update(*ctx, data, data_len);
+#endif
+}
+
+static void
+__hmac_sha256_final(archive_hmac_sha256_ctx *ctx, uint8_t *out,
+    size_t *out_len)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	size_t len = *out_len;
+	EVP_MAC_final(*ctx, out, &len, *out_len);
+#else
+	unsigned int len = (unsigned int)*out_len;
+	HMAC_Final(*ctx, out, &len);
+#endif
+	*out_len = len;
+}
+
+static void
+__hmac_sha256_cleanup(archive_hmac_sha256_ctx *ctx)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_MAC_CTX_free(*ctx);
+#else
+	HMAC_CTX_free(*ctx);
+#endif
+	*ctx = NULL;
+}
+
+#else
+
+static int
+__hmac_sha256_init(archive_hmac_sha256_ctx *ctx, const uint8_t *key,
+    size_t key_len)
+{
+	(void)ctx;
+	(void)key;
+	(void)key_len;
+	return -1;
+}
+
+static void
+__hmac_sha256_update(archive_hmac_sha256_ctx *ctx, const uint8_t *data,
+    size_t data_len)
+{
+	(void)ctx;
+	(void)data;
+	(void)data_len;
+}
+
+static void
+__hmac_sha256_final(archive_hmac_sha256_ctx *ctx, uint8_t *out,
+    size_t *out_len)
+{
+	(void)ctx;
+	(void)out;
+	(void)out_len;
+}
+
+static void
+__hmac_sha256_cleanup(archive_hmac_sha256_ctx *ctx)
+{
+	(void)ctx;
+}
+
+#endif
+
 const struct archive_hmac __archive_hmac = {
 	&__hmac_sha1_init,
 	&__hmac_sha1_update,
 	&__hmac_sha1_final,
 	&__hmac_sha1_cleanup,
+	&__hmac_sha256_init,
+	&__hmac_sha256_update,
+	&__hmac_sha256_final,
+	&__hmac_sha256_cleanup,
 };
