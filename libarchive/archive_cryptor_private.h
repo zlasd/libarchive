@@ -40,11 +40,6 @@
  */
 int __libarchive_cryptor_build_hack(void);
 
-/* Helpers for handling secret material. */
-void __archive_cryptor_secure_zero(void *, size_t);
-int __archive_cryptor_constant_time_equal(const void *, const void *, size_t);
-int __archive_cryptor_utf8_to_utf16le(const char *, uint8_t **, size_t *);
-
 #ifdef __APPLE__
 # include <AvailabilityMacros.h>
 # if MAC_OS_X_VERSION_MAX_ALLOWED >= 1080
@@ -162,8 +157,6 @@ typedef int archive_crypto_ctx;
 /* defines */
 #define archive_pbkdf2_sha1(pw, pw_len, salt, salt_len, rounds, dk, dk_len)\
   __archive_cryptor.pbkdf2sha1(pw, pw_len, salt, salt_len, rounds, dk, dk_len)
-#define archive_pbkdf2_sha256(pw, pw_len, salt, salt_len, rounds, dk, dk_len)\
-  __archive_cryptor.pbkdf2sha256(pw, pw_len, salt, salt_len, rounds, dk, dk_len)
 
 #define archive_decrypto_aes_ctr_init(ctx, key, key_len) \
   __archive_cryptor.decrypto_aes_ctr_init(ctx, key, key_len)
@@ -171,13 +164,6 @@ typedef int archive_crypto_ctx;
   __archive_cryptor.decrypto_aes_ctr_update(ctx, in, in_len, out, out_len)
 #define archive_decrypto_aes_ctr_release(ctx) \
   __archive_cryptor.decrypto_aes_ctr_release(ctx)
-
-#define archive_decrypto_aes_cbc_init(ctx, key, key_len, iv) \
-  __archive_cryptor.decrypto_aes_cbc_init(ctx, key, key_len, iv)
-#define archive_decrypto_aes_cbc_update(ctx, in, in_len, out, out_len) \
-  __archive_cryptor.decrypto_aes_cbc_update(ctx, in, in_len, out, out_len)
-#define archive_decrypto_aes_cbc_release(ctx) \
-  __archive_cryptor.decrypto_aes_cbc_release(ctx)
 
 #define archive_encrypto_aes_ctr_init(ctx, key, key_len) \
   __archive_cryptor.encrypto_aes_ctr_init(ctx, key, key_len)
@@ -197,21 +183,11 @@ struct archive_cryptor
   int (*pbkdf2sha1)(const char *pw, size_t pw_len, const uint8_t *salt,
     size_t salt_len, unsigned rounds, uint8_t *derived_key,
     size_t derived_key_len);
-  /* PKCS5 PBKDF2 HMAC-SHA256 */
-  int (*pbkdf2sha256)(const char *pw, size_t pw_len, const uint8_t *salt,
-    size_t salt_len, unsigned rounds, uint8_t *derived_key,
-    size_t derived_key_len);
   /* AES CTR mode(little endian version) */
   int (*decrypto_aes_ctr_init)(archive_crypto_ctx *, const uint8_t *, size_t);
   int (*decrypto_aes_ctr_update)(archive_crypto_ctx *, const uint8_t *,
     size_t, uint8_t *, size_t *);
   int (*decrypto_aes_ctr_release)(archive_crypto_ctx *);
-  /* AES CBC decrypt without padding. */
-  int (*decrypto_aes_cbc_init)(archive_crypto_ctx *, const uint8_t *,
-    size_t, const uint8_t *);
-  int (*decrypto_aes_cbc_update)(archive_crypto_ctx *, const uint8_t *,
-    size_t, uint8_t *, size_t *);
-  int (*decrypto_aes_cbc_release)(archive_crypto_ctx *);
   int (*encrypto_aes_ctr_init)(archive_crypto_ctx *, const uint8_t *, size_t);
   int (*encrypto_aes_ctr_update)(archive_crypto_ctx *, const uint8_t *,
     size_t, uint8_t *, size_t *);

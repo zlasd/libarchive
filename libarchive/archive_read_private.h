@@ -228,8 +228,6 @@ struct archive_read {
 		struct archive_read_passphrase *first;
 		struct archive_read_passphrase **last;
 		int candidate;
-		int requested;
-		int supplied;
 		archive_passphrase_callback *callback;
 		void *client_data;
 	}		passphrases;

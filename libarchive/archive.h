@@ -410,14 +410,6 @@ typedef const char *archive_passphrase_callback(struct archive *,
 #define ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED -2
 #define ARCHIVE_READ_FORMAT_ENCRYPTION_DONT_KNOW -1
 
-/* Codes returned by archive_read_validate_passphrase(). */
-#define ARCHIVE_READ_PASSPHRASE_UNSUPPORTED -2
-#define ARCHIVE_READ_PASSPHRASE_DONT_KNOW -1
-#define ARCHIVE_READ_PASSPHRASE_NOT_NEEDED 0
-#define ARCHIVE_READ_PASSPHRASE_REQUIRED 1
-#define ARCHIVE_READ_PASSPHRASE_VALID 2
-#define ARCHIVE_READ_PASSPHRASE_INVALID_OR_DAMAGED 3
-
 /*-
  * Basic outline for reading an archive:
  *   1) Ask archive_read_new for an archive reader object.
@@ -637,28 +629,6 @@ __LA_DECL la_int64_t		 archive_read_header_position(struct archive *);
  * just shows that there are some.
  */
 __LA_DECL int	archive_read_has_encrypted_entries(struct archive *);
-
-/*
- * Actively consume archive headers until encryption is found or the archive
- * reaches EOF.  Unlike archive_read_has_encrypted_entries(), this function
- * advances the reader and must only be used when the caller does not intend
- * to extract from the same handle afterwards.
- *
- * Returns 1 when encrypted data or metadata is found, 0 when a complete scan
- * proves that the selected format contains no encrypted entries, or one of
- * ARCHIVE_READ_FORMAT_ENCRYPTION_{DONT_KNOW,UNSUPPORTED} when no reliable
- * answer can be produced.
- */
-__LA_DECL int	archive_read_detect_encrypted_entries(struct archive *);
-
-/*
- * Consume every entry and verify configured passphrases against encrypted
- * metadata and data.  Passphrases must be registered before opening the
- * archive.  The function intentionally reads entry bodies to completion so
- * CRCs and authentication codes are checked; the reader must be reopened
- * before extraction.
- */
-__LA_DECL int	archive_read_validate_passphrase(struct archive *);
 
 /*
  * Returns a bitmask of capabilities that are supported by the archive format reader.

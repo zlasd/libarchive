@@ -746,36 +746,6 @@ __archive_sha1final(archive_sha1_ctx *ctx, void *md)
 
 #endif
 
-static int
-__archive_sha1clone(archive_sha1_ctx *dst, const archive_sha1_ctx *src)
-{
-#if defined(ARCHIVE_CRYPTO_SHA1_LIBC) || \
-    defined(ARCHIVE_CRYPTO_SHA1_LIBMD) || \
-    defined(ARCHIVE_CRYPTO_SHA1_LIBSYSTEM) || \
-    defined(ARCHIVE_CRYPTO_SHA1_NETTLE)
-  *dst = *src;
-  return (ARCHIVE_OK);
-#elif defined(ARCHIVE_CRYPTO_SHA1_MBEDTLS)
-  mbedtls_sha1_init(dst);
-  mbedtls_sha1_clone(dst, src);
-  return (ARCHIVE_OK);
-#elif defined(ARCHIVE_CRYPTO_SHA1_OPENSSL)
-  *dst = EVP_MD_CTX_new();
-  if (*dst == NULL)
-    return (ARCHIVE_FAILED);
-  if (!EVP_MD_CTX_copy_ex(*dst, *src)) {
-    EVP_MD_CTX_free(*dst);
-    *dst = NULL;
-    return (ARCHIVE_FAILED);
-  }
-  return (ARCHIVE_OK);
-#else
-  (void)dst;
-  (void)src;
-  return (ARCHIVE_FAILED);
-#endif
-}
-
 /* SHA256 implementations */
 #if defined(ARCHIVE_CRYPTO_SHA256_LIBC)
 
@@ -1596,7 +1566,6 @@ const struct archive_digest __archive_digest =
   &__archive_sha1init,
   &__archive_sha1update,
   &__archive_sha1final,
-  &__archive_sha1clone,
 
 /* SHA256 */
   &__archive_sha256init,

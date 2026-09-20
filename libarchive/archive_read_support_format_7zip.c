@@ -51,8 +51,6 @@
 #endif
 
 #include "archive.h"
-#include "archive_7zip_crypto_private.h"
-#include "archive_cryptor_private.h"
 #include "archive_entry.h"
 #include "archive_entry_locale.h"
 #include "archive_integer.h"
@@ -190,8 +188,6 @@ struct _7z_folder {
 		size_t		 outIndex;
 	} *bindPairs;
 	size_t			 numPackedStreams;
-	/* Input stream index for each packed stream, in pack-stream order. */
-	size_t			 *packedStreamIndices;
 	size_t			 numInStreams;
 	size_t			 numOutStreams;
 	int64_t			*unPackSize;
@@ -313,16 +309,6 @@ struct _7zip {
 	int64_t			 pack_stream_inbytes_remaining;
 	int64_t			 pack_stream_bytes_unconsumed;
 
-	/* AES-256-CBC input transform for encrypted pack streams. */
-	archive_crypto_ctx	 aes_ctx;
-	int			 aes_ctx_valid;
-	const struct _7z_folder *active_folder;
-	int			 active_folder_is_header;
-	unsigned char		*decrypted_buffer;
-	unsigned char		*decrypted_buffer_pointer;
-	size_t			 decrypted_buffer_size;
-	size_t			 decrypted_buffer_bytes_remaining;
-
 	/* The codec information of a folder. */
 	int64_t			 codec;
 	int64_t			 codec2;
@@ -426,7 +412,6 @@ static int	decode_encoded_header_info(struct archive_read *,
 static int	decompress(struct archive_read *, struct _7zip *,
 		    void *, size_t *, const void *, size_t *);
 static ssize_t	extract_pack_stream(struct archive_read *, size_t);
-static int	fill_decrypted_buffer(struct archive_read *, struct _7zip *);
 static int	files_info_numfiles_is_sane(const struct _7zip *);
 static int64_t	folder_uncompressed_size(struct _7z_folder *);
 static void	free_CodersInfo(struct _7z_coders_info *);
@@ -437,10 +422,6 @@ static void	free_PackInfo(struct _7z_pack_info *);
 static void	free_StreamsInfo(struct _7z_stream_info *);
 static void	free_SubStreamsInfo(struct _7z_substream_info *);
 static int	free_decompression(struct archive_read *, struct _7zip *);
-static int	init_7zip_aes_decryption(struct archive_read *, struct _7zip *,
-		    const struct _7z_coder *, int);
-static const struct _7z_coder *aes_coder_for_pack_stream(
-		    const struct _7z_folder *, size_t);
 static ssize_t	get_uncompressed_data(struct archive_read *, const void **,
 		    size_t, size_t);
 static const unsigned char *header_bytes(struct archive_read *, size_t);
@@ -1161,16 +1142,11 @@ archive_read_format_7zip_read_data(struct archive_read *a,
 		if ((zip->entry->flg & CRC32_IS_SET) &&
 			zip->si.ss.digests[zip->entry->ssIndex] !=
 		    zip->entry_crc32) {
-			if (zip->aes_ctx_valid)
-				archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-				    "Incorrect passphrase or damaged encrypted "
-				    "7-Zip entry");
-			else
-				archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-				    "7-Zip bad CRC: 0x%lx should be 0x%lx",
-				    zip->entry_crc32,
-				    (unsigned long)zip->si.ss.digests[
-						zip->entry->ssIndex]);
+			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
+			    "7-Zip bad CRC: 0x%lx should be 0x%lx",
+			    zip->entry_crc32,
+			    (unsigned long)zip->si.ss.digests[
+			    		zip->entry->ssIndex]);
 			ret = ARCHIVE_WARN;
 		}
 	}
@@ -1219,7 +1195,6 @@ archive_read_format_7zip_cleanup(struct archive_read *a)
 	free(zip->entry_names);
 	free_decompression(a, zip);
 	free(zip->uncompressed_buffer);
-	free(zip->decrypted_buffer);
 	free(zip->sub_stream_buff[0]);
 	free(zip->sub_stream_buff[1]);
 	free(zip->sub_stream_buff[2]);
@@ -2038,16 +2013,6 @@ free_decompression(struct archive_read *a, struct _7zip *zip)
 {
 	int r = ARCHIVE_OK;
 
-	if (zip->aes_ctx_valid) {
-		if (archive_decrypto_aes_cbc_release(&zip->aes_ctx) != 0)
-			r = ARCHIVE_FATAL;
-		zip->aes_ctx_valid = 0;
-	}
-	zip->decrypted_buffer_pointer = NULL;
-	zip->decrypted_buffer_bytes_remaining = 0;
-	zip->active_folder = NULL;
-	zip->active_folder_is_header = 0;
-
 #if !defined(HAVE_ZLIB_H) &&\
 	!(defined(HAVE_BZLIB_H) && defined(BZ_CONFIG_ERROR))
 	(void)a;/* UNUSED */
@@ -2088,101 +2053,6 @@ free_decompression(struct archive_read *a, struct _7zip *zip)
 		zip->ppmd7_valid = 0;
 	}
 	return (r);
-}
-
-static int
-init_7zip_aes_decryption(struct archive_read *a, struct _7zip *zip,
-    const struct _7z_coder *coder, int header)
-{
-	struct archive_7zip_aes_properties properties;
-	uint8_t key[ARCHIVE_7ZIP_AES_KEY_SIZE];
-	uint8_t *password_utf16 = NULL;
-	size_t password_utf16_len = 0;
-	const char *passphrase;
-	int r;
-
-	if (__archive_7zip_aes_parse_properties(coder->properties,
-	    coder->propertiesSize, &properties) != 0) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
-		    "Malformed 7-Zip AES properties");
-		return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-	}
-	if (properties.cycles_power > ARCHIVE_7ZIP_AES_MAX_CYCLES_POWER) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
-		    "7-Zip AES KDF cost is too large");
-		return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-	}
-
-	__archive_read_reset_passphrase(a);
-	passphrase = __archive_read_next_passphrase(a);
-	if (passphrase == NULL) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-		    "Passphrase required for encrypted 7-Zip %s",
-		    header ? "header" : "entry");
-		return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-	}
-	r = __archive_7zip_password_utf16le(passphrase, &password_utf16,
-	    &password_utf16_len);
-	if (r != 0) {
-		archive_set_error(&a->archive, r == -2 ? ENOMEM : EILSEQ,
-		    r == -2 ? "No memory for 7-Zip passphrase" :
-		    "7-Zip passphrase is not valid UTF-8");
-		return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-	}
-	r = __archive_7zip_aes_derive_key(&properties, password_utf16,
-	    password_utf16_len, key);
-	__archive_cryptor_secure_zero(password_utf16, password_utf16_len);
-	free(password_utf16);
-	if (r != 0) {
-		__archive_cryptor_secure_zero(key, sizeof(key));
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-		    "Failed to derive 7-Zip AES key");
-		return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-	}
-
-	r = archive_decrypto_aes_cbc_init(&zip->aes_ctx, key, sizeof(key),
-	    properties.iv);
-	__archive_cryptor_secure_zero(key, sizeof(key));
-	if (r != 0) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-		    r == CRYPTOR_STUB_FUNCTION ?
-		    "7-Zip AES decryption is unsupported by this build" :
-		    "Failed to initialize 7-Zip AES decryption");
-		return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-	}
-	zip->aes_ctx_valid = 1;
-	zip->decrypted_buffer_pointer = NULL;
-	zip->decrypted_buffer_bytes_remaining = 0;
-	return (ARCHIVE_OK);
-}
-
-/*
- * Return the AES coder, if any, which owns a packed input stream.  A packed
- * stream is the first input of a coder chain; following filters are described
- * by bind pairs and do not change the encryption boundary.
- */
-static const struct _7z_coder *
-aes_coder_for_pack_stream(const struct _7z_folder *folder, size_t pack_index)
-{
-	size_t input_index, offset = 0;
-
-	if (folder == NULL || pack_index >= folder->numPackedStreams ||
-	    folder->packedStreamIndices == NULL)
-		return (NULL);
-	input_index = folder->packedStreamIndices[pack_index];
-	for (size_t i = 0; i < folder->numCoders; i++) {
-		if (input_index >= offset &&
-		    input_index - offset < folder->coders[i].numInStreams) {
-			if (folder->coders[i].codec ==
-			    _7Z_CRYPTO_AES_256_SHA_256)
-				return (&folder->coders[i]);
-			return (NULL);
-		}
-		if (archive_ckd_add_size(&offset, offset,
-		    folder->coders[i].numInStreams))
-			return (NULL);
-	}
-	return (NULL);
 }
 
 static int
@@ -2387,7 +2257,6 @@ free_Folder(struct _7z_folder *f)
 		free(f->coders);
 	}
 	free(f->bindPairs);
-	free(f->packedStreamIndices);
 	free(f->unPackSize);
 }
 
@@ -2407,8 +2276,8 @@ read_Folder(struct archive_read *a, struct _7z_folder *f)
 	 */
 	if (parse_7zip_size(a, &(f->numCoders)) < 0)
 		return (-1);
-	/* Match the 7-Zip decoder's bounded folder graph. */
-	if (f->numCoders > 64)
+	if (f->numCoders > 4)
+		/* Too many coders. */
 		return (-1);
 
 	f->coders = calloc(f->numCoders, sizeof(*f->coders));
@@ -2499,12 +2368,8 @@ read_Folder(struct archive_read *a, struct _7z_folder *f)
 	}
 
 	f->numPackedStreams = numInStreamsTotal - f->numBindPairs;
-	f->packedStreamIndices = calloc(f->numPackedStreams,
-	    sizeof(*f->packedStreamIndices));
-	if (f->packedStreamIndices == NULL)
-		return (-1);
+	/* packedStreams are not needed; parse/verify nonetheless */
 	if (f->numPackedStreams == 1) {
-		size_t packedStream;
 		for (i = 0; i < numInStreamsTotal; i++) {
 			size_t j;
 			for (j = 0; j < f->numBindPairs; j++) {
@@ -2516,19 +2381,11 @@ read_Folder(struct archive_read *a, struct _7z_folder *f)
 		}
 		if (i == numInStreamsTotal)
 			return (-1);
-		packedStream = i;
-		f->packedStreamIndices[0] = packedStream;
 	} else {
 		for (i = 0; i < f->numPackedStreams; i++) {
 			size_t packedStream;
 			if (parse_7zip_size(a, &packedStream) < 0)
 				return (-1);
-			if (packedStream >= numInStreamsTotal)
-				return (-1);
-			for (size_t j = 0; j < i; j++)
-				if (f->packedStreamIndices[j] == packedStream)
-					return (-1);
-			f->packedStreamIndices[i] = packedStream;
 		}
 	}
 	f->numInStreams = numInStreamsTotal;
@@ -3611,8 +3468,7 @@ get_uncompressed_data(struct archive_read *a, const void **buff, size_t size,
 	struct _7zip *zip = a->format->data;
 	ssize_t bytes_avail;
 
-	if (zip->codec == _7Z_COPY && zip->codec2 == -1 &&
-	    !zip->aes_ctx_valid) {
+	if (zip->codec == _7Z_COPY && zip->codec2 == -1) {
 		/* Copy mode. */
 
 		*buff = __archive_read_ahead(a, minimum, &bytes_avail);
@@ -3669,64 +3525,6 @@ align_size(size_t s)
 	return (r);
 }
 
-static int
-fill_decrypted_buffer(struct archive_read *a, struct _7zip *zip)
-{
-	const uint8_t *ciphertext;
-	ssize_t bytes_avail;
-	size_t bytes_in, bytes_out;
-	int r;
-
-	if (zip->decrypted_buffer_bytes_remaining != 0)
-		return (ARCHIVE_OK);
-	if (zip->pack_stream_inbytes_remaining <= 0)
-		return (ARCHIVE_OK);
-	if (zip->pack_stream_inbytes_remaining < ARCHIVE_7ZIP_AES_BLOCK_SIZE) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
-		    "Encrypted 7-Zip pack stream is not block aligned");
-		return (ARCHIVE_FATAL);
-	}
-	if (zip->pack_stream_bytes_unconsumed != 0) {
-		r = read_consume(a);
-		if (r != ARCHIVE_OK)
-			return (r);
-	}
-	if (zip->decrypted_buffer == NULL) {
-		zip->decrypted_buffer_size = UBUFF_SIZE;
-		zip->decrypted_buffer = malloc(zip->decrypted_buffer_size);
-		if (zip->decrypted_buffer == NULL) {
-			archive_set_error(&a->archive, ENOMEM,
-			    "No memory for 7-Zip decryption");
-			return (ARCHIVE_FATAL);
-		}
-	}
-
-	ciphertext = __archive_read_ahead(a, ARCHIVE_7ZIP_AES_BLOCK_SIZE,
-	    &bytes_avail);
-	if (ciphertext == NULL || bytes_avail < ARCHIVE_7ZIP_AES_BLOCK_SIZE) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
-		    "Truncated encrypted 7-Zip pack stream");
-		return (ARCHIVE_FATAL);
-	}
-	bytes_in = (size_t)bytes_avail;
-	if (bytes_in > zip->decrypted_buffer_size)
-		bytes_in = zip->decrypted_buffer_size;
-	if (bytes_in > (uint64_t)zip->pack_stream_inbytes_remaining)
-		bytes_in = (size_t)zip->pack_stream_inbytes_remaining;
-	bytes_in &= ~(size_t)(ARCHIVE_7ZIP_AES_BLOCK_SIZE - 1);
-	bytes_out = zip->decrypted_buffer_size;
-	r = archive_decrypto_aes_cbc_update(&zip->aes_ctx, ciphertext,
-	    bytes_in, zip->decrypted_buffer, &bytes_out);
-	if (r != 0 || bytes_out != bytes_in) {
-		archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-		    "Failed to decrypt 7-Zip pack stream");
-		return (ARCHIVE_FATAL);
-	}
-	zip->decrypted_buffer_pointer = zip->decrypted_buffer;
-	zip->decrypted_buffer_bytes_remaining = bytes_out;
-	return (ARCHIVE_OK);
-}
-
 static ssize_t
 extract_pack_stream(struct archive_read *a, size_t minimum)
 {
@@ -3734,8 +3532,7 @@ extract_pack_stream(struct archive_read *a, size_t minimum)
 	ssize_t bytes_avail;
 	int r;
 
-	if (zip->codec == _7Z_COPY && zip->codec2 == -1 &&
-	    !zip->aes_ctx_valid) {
+	if (zip->codec == _7Z_COPY && zip->codec2 == -1) {
 		if (minimum == 0)
 			minimum = 1;
 		if (__archive_read_ahead(a, minimum, &bytes_avail) == NULL
@@ -3822,21 +3619,12 @@ extract_pack_stream(struct archive_read *a, size_t minimum)
 		 * available bytes; asking for more than that forces the
 		 * decompressor to combine reads by copying data.
 		 */
-		if (zip->aes_ctx_valid) {
-			if (zip->pack_stream_inbytes_remaining > 0 &&
-			    fill_decrypted_buffer(a, zip) != ARCHIVE_OK)
-				return (ARCHIVE_FATAL);
-			buff_in = zip->decrypted_buffer_pointer;
-			bytes_avail = (ssize_t)
-			    zip->decrypted_buffer_bytes_remaining;
-		} else {
-			buff_in = __archive_read_ahead(a, 1, &bytes_avail);
-			if (bytes_avail <= 0) {
-				archive_set_error(&a->archive,
-				    ARCHIVE_ERRNO_FILE_FORMAT,
-				    "Truncated 7-Zip file body");
-				return (ARCHIVE_FATAL);
-			}
+		buff_in = __archive_read_ahead(a, 1, &bytes_avail);
+		if (bytes_avail <= 0) {
+			archive_set_error(&a->archive,
+			    ARCHIVE_ERRNO_FILE_FORMAT,
+			    "Truncated 7-Zip file body");
+			return (ARCHIVE_FATAL);
 		}
 
 		buff_out = zip->uncompressed_buffer
@@ -3857,16 +3645,7 @@ extract_pack_stream(struct archive_read *a, size_t minimum)
 			end_of_data = 1;
 			break;
 		default:
-			if (zip->aes_ctx_valid)
-				archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-				    "Incorrect passphrase or damaged encrypted "
-				    "7-Zip %s",
-				    zip->header_is_being_read ? "header" : "entry");
 			return (ARCHIVE_FATAL);
-		}
-		if (zip->aes_ctx_valid) {
-			zip->decrypted_buffer_pointer += bytes_in;
-			zip->decrypted_buffer_bytes_remaining -= bytes_in;
 		}
 		zip->pack_stream_inbytes_remaining -= bytes_in;
 		if (bytes_out > (uint64_t)zip->folder_outbytes_remaining)
@@ -3874,14 +3653,6 @@ extract_pack_stream(struct archive_read *a, size_t minimum)
 		zip->folder_outbytes_remaining -= bytes_out;
 		zip->uncompressed_buffer_bytes_remaining += bytes_out;
 		zip->pack_stream_bytes_unconsumed = bytes_in;
-		if (zip->aes_ctx_valid && zip->folder_outbytes_remaining == 0) {
-			/* AES-CBC pack streams are zero-padded to a full block. */
-			zip->pack_stream_bytes_unconsumed +=
-			    zip->decrypted_buffer_bytes_remaining;
-			zip->decrypted_buffer_pointer = NULL;
-			zip->decrypted_buffer_bytes_remaining = 0;
-			zip->pack_stream_inbytes_remaining = 0;
-		}
 
 		/*
 		 * Continue decompression until uncompressed_buffer is full.
@@ -3916,40 +3687,12 @@ static int
 seek_pack(struct archive_read *a)
 {
 	struct _7zip *zip = a->format->data;
-	const struct _7z_coder *aes_coder = NULL;
 	int64_t pack_offset;
-	size_t local_pack_index;
 
 	if (zip->pack_stream_remaining == 0) {
 		archive_set_error(&(a->archive),
 		    ARCHIVE_ERRNO_MISC, "Damaged 7-Zip archive");
 		return (ARCHIVE_FATAL);
-	}
-	if (zip->active_folder != NULL) {
-		if (zip->pack_stream_index < zip->active_folder->packIndex)
-			return (ARCHIVE_FATAL);
-		local_pack_index = zip->pack_stream_index -
-		    zip->active_folder->packIndex;
-		if (local_pack_index >= zip->active_folder->numPackedStreams)
-			return (ARCHIVE_FATAL);
-		aes_coder = aes_coder_for_pack_stream(zip->active_folder,
-		    local_pack_index);
-	}
-	if (zip->aes_ctx_valid) {
-		if (archive_decrypto_aes_cbc_release(&zip->aes_ctx) != 0) {
-			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-			    "Failed to reset 7-Zip AES decryption");
-			return (ARCHIVE_FATAL);
-		}
-		zip->aes_ctx_valid = 0;
-	}
-	zip->decrypted_buffer_pointer = NULL;
-	zip->decrypted_buffer_bytes_remaining = 0;
-	if (aes_coder != NULL) {
-		int r = init_7zip_aes_decryption(a, zip, aes_coder,
-		    zip->active_folder_is_header);
-		if (r != ARCHIVE_OK)
-			return (r);
 	}
 	zip->pack_stream_inbytes_remaining =
 	    zip->si.pi.sizes[zip->pack_stream_index];
@@ -4095,23 +3838,9 @@ setup_decode_folder(struct archive_read *a, struct _7z_folder *folder,
 {
 	struct _7zip *zip = a->format->data;
 	const struct _7z_coder *coder1, *coder2;
-	static const struct _7z_coder coder_copy = {0, 1, 1, 0, NULL};
 	const char *cname = (header)?"archive header":"file content";
-	size_t aes_index = SIZE_MAX, aes_count = 0, i;
+	size_t i;
 	int r, found_bcj2 = 0;
-
-	if (zip->aes_ctx_valid) {
-		if (archive_decrypto_aes_cbc_release(&zip->aes_ctx) != 0) {
-			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-			    "Failed to reset 7-Zip AES decryption");
-			return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-		}
-		zip->aes_ctx_valid = 0;
-	}
-	zip->decrypted_buffer_pointer = NULL;
-	zip->decrypted_buffer_bytes_remaining = 0;
-	zip->active_folder = NULL;
-	zip->active_folder_is_header = 0;
 
 	/*
 	 * Release the memory which the previous folder used for BCJ2.
@@ -4129,36 +3858,21 @@ setup_decode_folder(struct archive_read *a, struct _7z_folder *folder,
 	for (i = 0; i < folder->numCoders; i++) {
 		switch(folder->coders[i].codec) {
 			case _7Z_CRYPTO_MAIN_ZIP:
-			case _7Z_CRYPTO_RAR_29: {
+			case _7Z_CRYPTO_RAR_29:
+			case _7Z_CRYPTO_AES_256_SHA_256: {
+				/* For entry that is associated with this folder, mark
+				   it as encrypted (data+metadata). */
 				zip->has_encrypted_entries = 1;
 				if (a->entry) {
-					if (header)
-						archive_entry_set_is_metadata_encrypted(
-						    a->entry, 1);
-					else
-						archive_entry_set_is_data_encrypted(
-						    a->entry, 1);
+					archive_entry_set_is_data_encrypted(a->entry, 1);
+					archive_entry_set_is_metadata_encrypted(a->entry, 1);
 				}
 				archive_set_error(&(a->archive),
 					ARCHIVE_ERRNO_MISC,
-					"Unsupported 7-Zip crypto codec in %s",
-					cname);
+					"The %s is encrypted, "
+					"but currently not supported", cname);
 				return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
 			}
-			case _7Z_CRYPTO_AES_256_SHA_256:
-				if (aes_index == SIZE_MAX)
-					aes_index = i;
-				aes_count++;
-				zip->has_encrypted_entries = 1;
-				if (a->entry) {
-					if (header)
-						archive_entry_set_is_metadata_encrypted(
-						    a->entry, 1);
-					else
-						archive_entry_set_is_data_encrypted(
-						    a->entry, 1);
-				}
-				break;
 			case _7Z_X86_BCJ2: {
 				found_bcj2++;
 				break;
@@ -4172,8 +3886,7 @@ setup_decode_folder(struct archive_read *a, struct _7z_folder *folder,
 		zip->has_encrypted_entries = 0;
 	}
 
-	if (aes_count == 0 &&
-	    ((folder->numCoders > 2 && !found_bcj2) || found_bcj2 > 1)) {
+	if ((folder->numCoders > 2 && !found_bcj2) || found_bcj2 > 1) {
 		archive_set_error(&(a->archive),
 		    ARCHIVE_ERRNO_MISC,
 		    "The %s is encoded with many filters, "
@@ -4188,59 +3901,11 @@ setup_decode_folder(struct archive_read *a, struct _7z_folder *folder,
 	zip->pack_stream_index = folder->packIndex;
 	zip->folder_outbytes_remaining = folder_uncompressed_size(folder);
 	zip->uncompressed_buffer_bytes_remaining = 0;
-	if (aes_count == 1) {
-		/* Standard 7-Zip AES folders are a simple linear decode graph:
-		 * AES -> compressor (or Copy) -> optional filter. */
-		if (aes_index != 0 || folder->numPackedStreams != 1 ||
-		    folder->numCoders > 3 || found_bcj2 != 0 ||
-		    folder->numBindPairs + 1 != folder->numCoders) {
-			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-			    "Unsupported 7-Zip AES coder graph in %s", cname);
-			return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-		}
-		for (i = 0; i < folder->numCoders; i++) {
-			if (folder->coders[i].numInStreams != 1 ||
-			    folder->coders[i].numOutStreams != 1) {
-				archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-				    "Unsupported 7-Zip AES coder graph in %s", cname);
-				return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-			}
-		}
-		for (i = 1; i < folder->numCoders; i++) {
-			size_t j;
-
-			for (j = 0; j < folder->numBindPairs; j++) {
-				if (folder->bindPairs[j].inIndex == i &&
-				    folder->bindPairs[j].outIndex == i - 1)
-					break;
-			}
-			if (j == folder->numBindPairs) {
-				archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-				    "Unsupported 7-Zip AES coder graph in %s", cname);
-				return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-			}
-		}
-		coder1 = folder->numCoders == 1 ? &coder_copy :
-		    &(folder->coders[1]);
-		coder2 = folder->numCoders == 3 ? &(folder->coders[2]) : NULL;
-	} else if (aes_count > 1) {
-		if (!found_bcj2) {
-			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
-			    "Unsupported multiple 7-Zip AES coder graph in %s",
-			    cname);
-			return (header ? ARCHIVE_FATAL : ARCHIVE_FAILED);
-		}
-		coder1 = &(folder->coders[0]);
+	coder1 = &(folder->coders[0]);
+	if (folder->numCoders == 2)
+		coder2 = &(folder->coders[1]);
+	else
 		coder2 = NULL;
-	} else {
-		coder1 = &(folder->coders[0]);
-		if (folder->numCoders == 2)
-			coder2 = &(folder->coders[1]);
-		else
-			coder2 = NULL;
-	}
-	zip->active_folder = folder;
-	zip->active_folder_is_header = header;
 
 	if (found_bcj2) {
 		/*
@@ -4260,53 +3925,7 @@ setup_decode_folder(struct archive_read *a, struct _7z_folder *folder,
 		size_t s[3] = {0, 0, 0};
 		int idx[3] = {0, 1, 2};
 
-		if (folder->numCoders == 6 && fc[0].codec ==
-		    _7Z_CRYPTO_AES_256_SHA_256 && fc[1].codec ==
-		    _7Z_CRYPTO_AES_256_SHA_256 && fc[2].codec ==
-		    _7Z_CRYPTO_AES_256_SHA_256 && fc[3].codec ==
-		    _7Z_CRYPTO_AES_256_SHA_256 && fc[4].codec == _7Z_LZMA2 &&
-		    fc[5].codec == _7Z_X86_BCJ2 && folder->numInStreams == 9 &&
-		    folder->numOutStreams == 6 &&
-		    folder->numPackedStreams == 4 &&
-		    folder->numBindPairs == 5) {
-			/* Four independently encrypted BCJ2 inputs with one
-			 * compressed main stream. */
-			coder1 = &(fc[4]);
-			coder2 = &(fc[5]);
-			sunpack[0] = folder->unPackSize[2];
-			sunpack[1] = folder->unPackSize[1];
-			sunpack[2] = folder->unPackSize[0];
-			remaining = folder->unPackSize[4];
-		} else if (folder->numCoders == 8 && fc[0].codec ==
-		    _7Z_CRYPTO_AES_256_SHA_256 && fc[1].codec ==
-		    _7Z_CRYPTO_AES_256_SHA_256 && fc[2].codec ==
-		    _7Z_CRYPTO_AES_256_SHA_256 && fc[3].codec ==
-		    _7Z_CRYPTO_AES_256_SHA_256 && fc[4].codec == _7Z_LZMA &&
-		    fc[5].codec == _7Z_LZMA && fc[6].codec == _7Z_LZMA2 &&
-		    fc[7].codec == _7Z_X86_BCJ2 && folder->numInStreams == 11 &&
-		    folder->numOutStreams == 8 &&
-		    folder->numPackedStreams == 4 &&
-		    folder->numBindPairs == 7) {
-			/*
-			 * This is the graph emitted by 7-Zip when each BCJ2
-			 * input stream is encrypted independently:
-			 *
-			 *   AES+LZMA2 -> BCJ2 main
-			 *   AES       -> BCJ2 range
-			 *   AES+LZMA -> BCJ2 jump/call
-			 *   AES+LZMA -> BCJ2 jump/call
-			 */
-			coder1 = &(fc[6]);
-			coder2 = &(fc[7]);
-			scoder[0] = &coder_copy;
-			scoder[1] = &(fc[5]);
-			scoder[2] = &(fc[4]);
-			sunpack[0] = folder->unPackSize[2];
-			sunpack[1] = folder->unPackSize[5];
-			sunpack[2] = folder->unPackSize[4];
-			idx[0] = 1; idx[1] = 2; idx[2] = 0;
-			remaining = folder->unPackSize[6];
-		} else if (folder->numCoders == 4 && fc[3].codec == _7Z_X86_BCJ2 &&
+		if (folder->numCoders == 4 && fc[3].codec == _7Z_X86_BCJ2 &&
 		    folder->numInStreams == 7 && folder->numOutStreams == 4 &&
 		    zip->pack_stream_remaining == 4) {
 			/* Source type 1 made by 7zr or 7z with -m options. */
