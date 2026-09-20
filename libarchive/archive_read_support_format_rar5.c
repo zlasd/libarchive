@@ -977,9 +977,11 @@ rar5_fill_data_decryption(struct archive_read *a, struct rar5 *rar5,
 
 	if (how_many <= rar5->crypt.bytes_avail)
 		return (1);
-	if ((uint64_t)(how_many - rar5->crypt.bytes_avail) >
-	    (uint64_t)rar5->crypt.ciphertext_remaining)
-		return (0);
+	/* A compressed block may request lookahead beyond the final ciphertext.
+	 * Drain the remaining real bytes first, even if they cannot satisfy the
+	 * whole request. read_ahead() can then supply its bounded, non-consumable
+	 * safety extension. Rejecting here leaves ciphertext_remaining nonzero
+	 * and incorrectly makes that final block look like end-of-file. */
 	needed = how_many - rar5->crypt.bytes_avail;
 	raw_size = needed < 64 * 1024 ? 64 * 1024 : needed;
 	if (raw_size > (uint64_t)rar5->crypt.ciphertext_remaining)
@@ -4940,8 +4942,19 @@ static int rar5_read_data(struct archive_read *a, const void **buff,
 	}
 
 	ret = do_unpack(a, rar5, buff, size, offset);
+	if (ret == ARCHIVE_EOF &&
+	    (rar5->file.service || rar5->cstate.method == 0 ?
+	     rar5->cstate.last_unstore_ptr : rar5->cstate.last_write_ptr) !=
+	    rar5->file.unpacked_size) {
+		/* An exhausted input buffer is not a successful file end. In
+		 * particular, archive_read_extract() would otherwise pad the missing
+		 * output with zeros and return success without a checksum check. */
+		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
+		    "Truncated RAR5 file data");
+		return (ARCHIVE_FATAL);
+	}
 	if(ret != ARCHIVE_OK) {
-		if (rar5->crypt.ctx_valid) {
+		if (ret < ARCHIVE_OK && rar5->crypt.ctx_valid) {
 			(void)rar5_finish_data_decryption(a, rar5);
 			archive_set_error(&a->archive, ARCHIVE_ERRNO_MISC,
 			    "Incorrect passphrase or damaged encrypted RAR5 entry");

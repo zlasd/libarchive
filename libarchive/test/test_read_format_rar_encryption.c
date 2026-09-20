@@ -25,6 +25,109 @@
  */
 #include "test.h"
 
+/* Original deterministic payload: lowercase hex of the low byte from a
+ * xorshift32 stream seeded with 0x12345678, truncated to 131060 bytes.
+ * Packed with RAR 7.23: rar a -ma5 -m3 -md32m -s- -ppassword archive.rar
+ * payload-131060.txt. The last compressed block needs lookahead beyond the
+ * remaining ciphertext, while part of that ciphertext is still unread. */
+static void
+rar5_lookahead_payload(unsigned char *expected, size_t size)
+{
+	static const char hex[] = "0123456789abcdef";
+	uint32_t state = 0x12345678;
+	size_t i;
+
+	for (i = 0; i < size; i += 2) {
+		state ^= state << 13;
+		state ^= state >> 17;
+		state ^= state << 5;
+		expected[i] = hex[(state >> 4) & 15];
+		if (i + 1 < size)
+			expected[i + 1] = hex[state & 15];
+	}
+}
+
+DEFINE_TEST(test_read_format_rar5_encrypted_lookahead)
+{
+	const char *refname = "test_read_format_rar5_encrypted_lookahead.rar";
+	struct archive *a;
+	struct archive_entry *ae;
+	unsigned char expected[131060], actual[131061];
+	const void *block;
+	size_t size, total;
+	la_int64_t offset;
+	la_ssize_t n;
+	int mode, r;
+
+	extract_reference_file(refname);
+	rar5_lookahead_payload(expected, sizeof(expected));
+	for (mode = 0; mode < 3; ++mode) {
+		assert((a = archive_read_new()) != NULL);
+		assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_rar5(a));
+		assertEqualIntA(a, ARCHIVE_OK, archive_read_add_passphrase(a, "password"));
+		assertEqualIntA(a, ARCHIVE_OK, archive_read_open_filename(a, refname, 10240));
+		assertEqualIntA(a, ARCHIVE_OK, archive_read_next_header(a, &ae));
+		assertEqualInt(sizeof(expected), archive_entry_size(ae));
+		total = 0;
+		if (mode == 0) {
+			while ((r = archive_read_data_block(a, &block, &size, &offset)) == ARCHIVE_OK) {
+				if (size != 0)
+					assertEqualInt(total, offset);
+				if (!assert(size <= sizeof(expected) - total))
+					break;
+				assertEqualMem(expected + total, block, size);
+				total += size;
+			}
+			assertEqualIntA(a, ARCHIVE_EOF, r);
+			assertEqualInt(sizeof(expected), total);
+		} else if (mode == 1) {
+			while ((n = archive_read_data(a, actual, sizeof(actual))) > 0) {
+				if (!assert((size_t)n <= sizeof(expected) - total))
+					break;
+				assertEqualMem(expected + total, actual, (size_t)n);
+				total += (size_t)n;
+			}
+			assertEqualIntA(a, 0, n);
+			assertEqualInt(sizeof(expected), total);
+		} else {
+			archive_entry_set_pathname(ae, "extracted.txt");
+			assertEqualIntA(a, ARCHIVE_OK, archive_read_extract(a, ae, 0));
+			assertFileContents(expected, sizeof(expected), "extracted.txt");
+		}
+		assertEqualIntA(a, ARCHIVE_EOF, archive_read_next_header(a, &ae));
+		assertEqualInt(ARCHIVE_OK, archive_read_free(a));
+	}
+}
+
+DEFINE_TEST(test_read_format_rar5_encrypted_truncated_data)
+{
+	const char *refname = "test_read_format_rar5_encrypted_lookahead.rar";
+	struct archive *a;
+	struct archive_entry *ae;
+	char *archive;
+	const void *block;
+	size_t archive_size, size;
+	la_int64_t offset;
+	int r;
+
+	extract_reference_file(refname);
+	archive = slurpfile(&archive_size, "%s", refname);
+	assert(archive != NULL);
+	assert((a = archive_read_new()) != NULL);
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_support_format_rar5(a));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_add_passphrase(a, "password"));
+	/* Remove the end/QuickOpen records and part of the final ciphertext. */
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_open_memory(a, archive, archive_size - 1024));
+	assertEqualIntA(a, ARCHIVE_OK, archive_read_next_header(a, &ae));
+	do {
+		r = archive_read_data_block(a, &block, &size, &offset);
+	} while (r == ARCHIVE_OK);
+	assertEqualIntA(a, ARCHIVE_FATAL, r);
+	assertA(archive_error_string(a) != NULL);
+	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
+	free(archive);
+}
+
 /*
  * All of the archives for this test contain four files: a.txt, b.txt, c.txt, and d.txt
  * For solid archives or archives or archives where filenames are encrypted, all four files are encrypted with the
