@@ -162,6 +162,10 @@ DEFINE_TEST(test_archive_rar5_aes_kdf)
 	unsigned char hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE];
 	unsigned char password_check[ARCHIVE_RAR5_PASSWORD_CHECK_SIZE];
 	unsigned char invalid_check[ARCHIVE_RAR5_CHECK_SIZE];
+	unsigned char cached_key[ARCHIVE_RAR5_KEY_SIZE];
+	unsigned char cached_hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE];
+	unsigned char cached_password_check[ARCHIVE_RAR5_PASSWORD_CHECK_SIZE];
+	struct archive_rar5_kdf_cache cache, cleared_cache;
 	int r;
 
 	r = __archive_rar5_derive_keys("password", salt, 15, actual,
@@ -180,7 +184,73 @@ DEFINE_TEST(test_archive_rar5_aes_kdf)
 	assertEqualInt(0, __archive_rar5_check_value_is_valid(invalid_check));
 	assertEqualInt(-1, __archive_rar5_derive_key("password", salt,
 	    ARCHIVE_RAR5_MAX_KDF_COUNT + 1, actual));
+	memset(&cache, 0, sizeof(cache));
+	r = __archive_rar5_derive_keys_cached(&cache, "password", salt, 15,
+	    cached_key, cached_hash_key, cached_password_check);
+	assertEqualInt(0, r);
+	assertEqualInt(1, cache.next);
+	assertEqualMem(expected, cached_key, sizeof(cached_key));
+	assertEqualMem(expected_hash_key, cached_hash_key,
+	    sizeof(cached_hash_key));
+	assertEqualMem(check, cached_password_check,
+	    sizeof(cached_password_check));
+	memset(cached_key, 0, sizeof(cached_key));
+	r = __archive_rar5_derive_keys_cached(&cache, "password", salt, 15,
+	    cached_key, NULL, NULL);
+	assertEqualInt(0, r);
+	assertEqualInt(1, cache.next);
+	assertEqualMem(expected, cached_key, sizeof(cached_key));
+	memset(&cleared_cache, 0, sizeof(cleared_cache));
+	__archive_rar5_kdf_cache_clear(&cache);
+	assertEqualMem(&cleared_cache, &cache, sizeof(cache));
 	__archive_cryptor_secure_zero(actual, sizeof(actual));
+	__archive_cryptor_secure_zero(hash_key, sizeof(hash_key));
+	__archive_cryptor_secure_zero(password_check, sizeof(password_check));
+	__archive_cryptor_secure_zero(cached_key, sizeof(cached_key));
+	__archive_cryptor_secure_zero(cached_hash_key,
+	    sizeof(cached_hash_key));
+	__archive_cryptor_secure_zero(cached_password_check,
+	    sizeof(cached_password_check));
+}
+
+DEFINE_TEST(test_archive_rar5_aes_kdf_long_password)
+{
+	static const unsigned char salt[ARCHIVE_RAR5_SALT_SIZE] = {
+		0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+		0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+	};
+	static const unsigned char expected_key[ARCHIVE_RAR5_KEY_SIZE] = {
+		0xa1, 0x07, 0x14, 0x72, 0xc6, 0x1b, 0x9a, 0x69,
+		0xd6, 0xd4, 0x7f, 0xa0, 0x93, 0x12, 0x28, 0x67,
+		0xc7, 0xc5, 0x39, 0xdd, 0x72, 0x5f, 0x28, 0xd4,
+		0xf2, 0x7e, 0x6d, 0x6f, 0x10, 0xfd, 0x4b, 0x74
+	};
+	static const unsigned char expected_hash_key[
+	    ARCHIVE_RAR5_HASH_KEY_SIZE] = {
+		0xea, 0x5b, 0xb7, 0x3a, 0x04, 0x66, 0x88, 0xfd,
+		0x6f, 0x97, 0x0e, 0x3f, 0x02, 0x20, 0xf6, 0x8c,
+		0x42, 0x91, 0x8d, 0x29, 0x1a, 0xc8, 0x5b, 0x60,
+		0x84, 0x89, 0x81, 0x3e, 0x35, 0x81, 0x72, 0x8d
+	};
+	static const unsigned char expected_password_check[
+	    ARCHIVE_RAR5_PASSWORD_CHECK_SIZE] = {
+		0xfe, 0x29, 0x6d, 0x5a, 0x87, 0x09, 0xd7, 0xa6
+	};
+	char password[81];
+	unsigned char key[ARCHIVE_RAR5_KEY_SIZE];
+	unsigned char hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE];
+	unsigned char password_check[ARCHIVE_RAR5_PASSWORD_CHECK_SIZE];
+
+	memset(password, 'a', sizeof(password) - 1);
+	password[sizeof(password) - 1] = '\0';
+	assertEqualInt(0, __archive_rar5_derive_keys(password, salt, 0, key,
+	    hash_key, password_check));
+	assertEqualMem(expected_key, key, sizeof(key));
+	assertEqualMem(expected_hash_key, hash_key, sizeof(hash_key));
+	assertEqualMem(expected_password_check, password_check,
+	    sizeof(password_check));
+	__archive_cryptor_secure_zero(password, sizeof(password));
+	__archive_cryptor_secure_zero(key, sizeof(key));
 	__archive_cryptor_secure_zero(hash_key, sizeof(hash_key));
 	__archive_cryptor_secure_zero(password_check, sizeof(password_check));
 }
@@ -310,6 +380,39 @@ DEFINE_TEST(test_archive_sha1_clone)
 	assertEqualMem(expected_abc, digest, sizeof(digest));
 	assertEqualInt(ARCHIVE_OK, archive_sha1_update(&copy, "d", 1));
 	assertEqualInt(ARCHIVE_OK, archive_sha1_final(&copy, digest));
+	assertEqualMem(expected_abd, digest, sizeof(digest));
+	__archive_cryptor_secure_zero(digest, sizeof(digest));
+}
+
+DEFINE_TEST(test_archive_sha256_clone)
+{
+	static const unsigned char expected_abc[32] = {
+		0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+		0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+		0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+		0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+	};
+	static const unsigned char expected_abd[32] = {
+		0xa5, 0x2d, 0x15, 0x9f, 0x26, 0x2b, 0x2c, 0x6d,
+		0xdb, 0x72, 0x4a, 0x61, 0x84, 0x0b, 0xef, 0xc3,
+		0x6e, 0xb3, 0x0c, 0x88, 0x87, 0x7a, 0x40, 0x30,
+		0xb6, 0x5c, 0xbe, 0x86, 0x29, 0x84, 0x49, 0xc9
+	};
+	archive_sha256_ctx original, copy;
+	unsigned char digest[32];
+
+	assertEqualInt(ARCHIVE_OK, archive_sha256_init(&original));
+	assertEqualInt(ARCHIVE_OK, archive_sha256_update(&original, "ab", 2));
+	if (archive_sha256_clone(&copy, &original) != ARCHIVE_OK) {
+		assertEqualInt(ARCHIVE_OK, archive_sha256_final(&original, digest));
+		skipping("This platform cannot clone SHA-256 contexts");
+		return;
+	}
+	assertEqualInt(ARCHIVE_OK, archive_sha256_update(&original, "c", 1));
+	assertEqualInt(ARCHIVE_OK, archive_sha256_final(&original, digest));
+	assertEqualMem(expected_abc, digest, sizeof(digest));
+	assertEqualInt(ARCHIVE_OK, archive_sha256_update(&copy, "d", 1));
+	assertEqualInt(ARCHIVE_OK, archive_sha256_final(&copy, digest));
 	assertEqualMem(expected_abd, digest, sizeof(digest));
 	__archive_cryptor_secure_zero(digest, sizeof(digest));
 }

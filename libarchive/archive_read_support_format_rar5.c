@@ -401,6 +401,7 @@ struct rar5 {
 	struct multivolume vol;
 	struct rar5_crypt crypt;
 	struct rar5_header_crypt header_crypt;
+	struct archive_rar5_kdf_cache kdf_cache;
 
 	/* The header of currently processed RARv5 block. Used in main
 	 * decompression logic loop. */
@@ -2621,7 +2622,7 @@ process_head_crypt(struct archive_read *a, struct rar5 *rar5,
 	__archive_read_reset_passphrase(a);
 	while ((passphrase = __archive_read_next_passphrase(a)) != NULL) {
 		had_passphrase = 1;
-		r = __archive_rar5_derive_keys(passphrase,
+		r = __archive_rar5_derive_keys_cached(&rar5->kdf_cache, passphrase,
 		    rar5->header_crypt.salt, rar5->header_crypt.kdf_count,
 		    rar5->header_crypt.key, NULL,
 		    rar5->header_crypt.has_check ? password_check : NULL);
@@ -4798,7 +4799,8 @@ rar5_init_data_decryption(struct archive_read *a, struct rar5 *rar5)
 	__archive_read_reset_passphrase(a);
 	while ((passphrase = __archive_read_next_passphrase(a)) != NULL) {
 		had_passphrase = 1;
-		r = __archive_rar5_derive_keys(passphrase, rar5->crypt.salt,
+		r = __archive_rar5_derive_keys_cached(&rar5->kdf_cache, passphrase,
+		    rar5->crypt.salt,
 		    rar5->crypt.kdf_count, key,
 		    rar5->crypt.tweaked_checksums ? rar5->crypt.hash_key : NULL,
 		    rar5->crypt.has_check ? password_check : NULL);
@@ -5063,6 +5065,7 @@ static int rar5_cleanup(struct archive_read *a) {
 	    sizeof(rar5->crypt.hash_key));
 	__archive_cryptor_secure_zero(rar5->header_crypt.key,
 	    sizeof(rar5->header_crypt.key));
+	__archive_rar5_kdf_cache_clear(&rar5->kdf_cache);
 	if (rar5->header_crypt.buffer != NULL)
 		__archive_cryptor_secure_zero(rar5->header_crypt.buffer,
 		    rar5->header_crypt.buffer_size);

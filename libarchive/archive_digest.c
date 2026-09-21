@@ -1048,6 +1048,38 @@ __archive_sha256final(archive_sha256_ctx *ctx, void *md)
 
 #endif
 
+static int
+__archive_sha256clone(archive_sha256_ctx *dst, const archive_sha256_ctx *src)
+{
+#if defined(ARCHIVE_CRYPTO_SHA256_LIBC) || \
+    defined(ARCHIVE_CRYPTO_SHA256_LIBC2) || \
+    defined(ARCHIVE_CRYPTO_SHA256_LIBC3) || \
+    defined(ARCHIVE_CRYPTO_SHA256_LIBMD) || \
+    defined(ARCHIVE_CRYPTO_SHA256_LIBSYSTEM) || \
+    defined(ARCHIVE_CRYPTO_SHA256_NETTLE)
+  *dst = *src;
+  return (ARCHIVE_OK);
+#elif defined(ARCHIVE_CRYPTO_SHA256_MBEDTLS)
+  mbedtls_sha256_init(dst);
+  mbedtls_sha256_clone(dst, src);
+  return (ARCHIVE_OK);
+#elif defined(ARCHIVE_CRYPTO_SHA256_OPENSSL)
+  *dst = EVP_MD_CTX_new();
+  if (*dst == NULL)
+    return (ARCHIVE_FAILED);
+  if (!EVP_MD_CTX_copy_ex(*dst, *src)) {
+    EVP_MD_CTX_free(*dst);
+    *dst = NULL;
+    return (ARCHIVE_FAILED);
+  }
+  return (ARCHIVE_OK);
+#else
+  (void)dst;
+  (void)src;
+  return (ARCHIVE_FAILED);
+#endif
+}
+
 /* SHA384 implementations */
 #if defined(ARCHIVE_CRYPTO_SHA384_LIBC)
 
@@ -1602,6 +1634,7 @@ const struct archive_digest __archive_digest =
   &__archive_sha256init,
   &__archive_sha256update,
   &__archive_sha256final,
+  &__archive_sha256clone,
 
 /* SHA384 */
   &__archive_sha384init,

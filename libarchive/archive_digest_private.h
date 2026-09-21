@@ -368,6 +368,8 @@ typedef unsigned char archive_sha512_ctx;
   __archive_digest.sha256final(ctx, md)
 #define archive_sha256_update(ctx, buf, n)\
   __archive_digest.sha256update(ctx, buf, n)
+#define archive_sha256_clone(dst, src)\
+  __archive_digest.sha256clone(dst, src)
 
 #if defined(ARCHIVE_CRYPTO_SHA384_LIBC) ||\
   defined(ARCHIVE_CRYPTO_SHA384_LIBC2) ||\
@@ -421,6 +423,7 @@ struct archive_digest
   int (*sha256init)(archive_sha256_ctx *);
   int (*sha256update)(archive_sha256_ctx *, const void *, size_t);
   int (*sha256final)(archive_sha256_ctx *, void *);
+  int (*sha256clone)(archive_sha256_ctx *, const archive_sha256_ctx *);
   int (*sha384init)(archive_sha384_ctx *);
   int (*sha384update)(archive_sha384_ctx *, const void *, size_t);
   int (*sha384final)(archive_sha384_ctx *, void *);

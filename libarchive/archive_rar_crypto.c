@@ -115,6 +115,181 @@ __archive_rar5_derive_key(const char *password, const uint8_t *salt,
 	    NULL, NULL));
 }
 
+struct rar5_hmac_sha256_templates {
+	archive_sha256_ctx inner;
+	archive_sha256_ctx outer;
+	int inner_valid;
+	int outer_valid;
+};
+
+/* PBKDF2 repeats HMAC with the same password.  Keep the SHA-256 state after
+ * hashing the inner and outer pads so every round only hashes its 32-byte
+ * input, matching the optimization used by the reference RAR decoder. */
+
+static void
+rar5_hmac_sha256_templates_cleanup(
+    struct rar5_hmac_sha256_templates *templates)
+{
+	uint8_t digest[32];
+
+	if (templates->inner_valid)
+		(void)archive_sha256_final(&templates->inner, digest);
+	if (templates->outer_valid)
+		(void)archive_sha256_final(&templates->outer, digest);
+	__archive_cryptor_secure_zero(templates, sizeof(*templates));
+	__archive_cryptor_secure_zero(digest, sizeof(digest));
+}
+
+static int
+rar5_hmac_sha256_templates_init(struct rar5_hmac_sha256_templates *templates,
+    const uint8_t *password, size_t password_len)
+{
+	archive_sha256_ctx ctx;
+	uint8_t key[64], digest[32];
+	const uint8_t *normalized_password = password;
+	size_t normalized_len = password_len;
+	int ctx_valid = 0, r = CRYPTOR_STUB_FUNCTION;
+	unsigned i;
+
+	memset(templates, 0, sizeof(*templates));
+	memset(key, 0, sizeof(key));
+	memset(digest, 0, sizeof(digest));
+	if (password_len > sizeof(key)) {
+		if (archive_sha256_init(&ctx) != ARCHIVE_OK)
+			goto cleanup;
+		ctx_valid = 1;
+		if (archive_sha256_update(&ctx, password, password_len) !=
+		    ARCHIVE_OK)
+			goto cleanup;
+		ctx_valid = 0;
+		if (archive_sha256_final(&ctx, digest) != ARCHIVE_OK)
+			goto cleanup;
+		normalized_password = digest;
+		normalized_len = sizeof(digest);
+	}
+	if (normalized_len != 0)
+		memcpy(key, normalized_password, normalized_len);
+	for (i = 0; i < sizeof(key); i++)
+		key[i] ^= 0x36;
+	if (archive_sha256_init(&templates->inner) != ARCHIVE_OK)
+		goto cleanup;
+	templates->inner_valid = 1;
+	if (archive_sha256_update(&templates->inner, key, sizeof(key)) !=
+	    ARCHIVE_OK)
+		goto cleanup;
+	for (i = 0; i < sizeof(key); i++)
+		key[i] ^= 0x36 ^ 0x5c;
+	if (archive_sha256_init(&templates->outer) != ARCHIVE_OK)
+		goto cleanup;
+	templates->outer_valid = 1;
+	if (archive_sha256_update(&templates->outer, key, sizeof(key)) !=
+	    ARCHIVE_OK)
+		goto cleanup;
+	r = 0;
+
+cleanup:
+	if (ctx_valid)
+		(void)archive_sha256_final(&ctx, digest);
+	__archive_cryptor_secure_zero(key, sizeof(key));
+	__archive_cryptor_secure_zero(digest, sizeof(digest));
+	if (r != 0)
+		rar5_hmac_sha256_templates_cleanup(templates);
+	return (r);
+}
+
+static int
+rar5_hmac_sha256_calculate(
+    const struct rar5_hmac_sha256_templates *templates,
+    const uint8_t *data, size_t data_len, uint8_t digest[32])
+{
+	archive_sha256_ctx inner, outer;
+	uint8_t inner_digest[32];
+	int inner_valid = 0, outer_valid = 0, r = CRYPTOR_STUB_FUNCTION;
+
+	if (archive_sha256_clone(&inner, &templates->inner) != ARCHIVE_OK)
+		goto cleanup;
+	inner_valid = 1;
+	if (archive_sha256_update(&inner, data, data_len) != ARCHIVE_OK)
+		goto cleanup;
+	inner_valid = 0;
+	if (archive_sha256_final(&inner, inner_digest) != ARCHIVE_OK)
+		goto cleanup;
+	if (archive_sha256_clone(&outer, &templates->outer) != ARCHIVE_OK)
+		goto cleanup;
+	outer_valid = 1;
+	if (archive_sha256_update(&outer, inner_digest,
+	    sizeof(inner_digest)) != ARCHIVE_OK)
+		goto cleanup;
+	outer_valid = 0;
+	if (archive_sha256_final(&outer, digest) != ARCHIVE_OK)
+		goto cleanup;
+	r = 0;
+
+cleanup:
+	if (inner_valid)
+		(void)archive_sha256_final(&inner, inner_digest);
+	if (outer_valid)
+		(void)archive_sha256_final(&outer, inner_digest);
+	__archive_cryptor_secure_zero(inner_digest, sizeof(inner_digest));
+	return (r);
+}
+
+static int
+rar5_pbkdf2_sha256(const char *password, const uint8_t *salt,
+    unsigned rounds, uint8_t key[ARCHIVE_RAR5_KEY_SIZE],
+    uint8_t hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE],
+    uint8_t verification[32])
+{
+	struct rar5_hmac_sha256_templates templates;
+	uint8_t salt_data[ARCHIVE_RAR5_SALT_SIZE + 4];
+	uint8_t u[32], value[32];
+	unsigned current, final_rounds;
+	size_t i;
+	int r;
+
+	memcpy(salt_data, salt, ARCHIVE_RAR5_SALT_SIZE);
+	salt_data[ARCHIVE_RAR5_SALT_SIZE] = 0;
+	salt_data[ARCHIVE_RAR5_SALT_SIZE + 1] = 0;
+	salt_data[ARCHIVE_RAR5_SALT_SIZE + 2] = 0;
+	salt_data[ARCHIVE_RAR5_SALT_SIZE + 3] = 1;
+	r = rar5_hmac_sha256_templates_init(&templates,
+	    (const uint8_t *)password, strlen(password));
+	if (r != 0)
+		goto cleanup;
+	r = rar5_hmac_sha256_calculate(&templates, salt_data,
+	    sizeof(salt_data), u);
+	if (r != 0)
+		goto cleanup_templates;
+	memcpy(value, u, sizeof(value));
+	if (rounds == 1)
+		memcpy(key, value, ARCHIVE_RAR5_KEY_SIZE);
+	/* RAR5 derives all three values from one continued PBKDF2 chain. */
+	final_rounds = rounds + (verification != NULL ? 32 :
+	    hash_key != NULL ? 16 : 0);
+	for (current = 2; current <= final_rounds; current++) {
+		r = rar5_hmac_sha256_calculate(&templates, u, sizeof(u), u);
+		if (r != 0)
+			goto cleanup_templates;
+		for (i = 0; i < sizeof(value); i++)
+			value[i] ^= u[i];
+		if (current == rounds)
+			memcpy(key, value, ARCHIVE_RAR5_KEY_SIZE);
+		if (hash_key != NULL && current == rounds + 16)
+			memcpy(hash_key, value, ARCHIVE_RAR5_HASH_KEY_SIZE);
+		if (verification != NULL && current == rounds + 32)
+			memcpy(verification, value, 32);
+	}
+	r = 0;
+
+cleanup_templates:
+	rar5_hmac_sha256_templates_cleanup(&templates);
+cleanup:
+	__archive_cryptor_secure_zero(salt_data, sizeof(salt_data));
+	__archive_cryptor_secure_zero(u, sizeof(u));
+	__archive_cryptor_secure_zero(value, sizeof(value));
+	return (r);
+}
+
 int
 __archive_rar5_derive_keys(const char *password, const uint8_t *salt,
     unsigned kdf_count, uint8_t key[ARCHIVE_RAR5_KEY_SIZE],
@@ -132,11 +307,20 @@ __archive_rar5_derive_keys(const char *password, const uint8_t *salt,
 	rounds = UINT64_C(1) << kdf_count;
 	if (rounds > UINT_MAX - 32)
 		return (-1);
+	r = rar5_pbkdf2_sha256(password, salt, (unsigned)rounds, key,
+	    hash_key, password_check != NULL ? verification : NULL);
+	if (r == 0)
+		goto fold_password_check;
+	__archive_cryptor_secure_zero(key, ARCHIVE_RAR5_KEY_SIZE);
+	if (hash_key != NULL)
+		__archive_cryptor_secure_zero(hash_key,
+		    ARCHIVE_RAR5_HASH_KEY_SIZE);
+	__archive_cryptor_secure_zero(verification, sizeof(verification));
 	r = archive_pbkdf2_sha256(password, strlen(password), salt,
 	    ARCHIVE_RAR5_SALT_SIZE, (unsigned)rounds, key,
 	    ARCHIVE_RAR5_KEY_SIZE);
 	if (r != 0)
-		return (r);
+		goto failed;
 	if (hash_key != NULL) {
 		r = archive_pbkdf2_sha256(password, strlen(password), salt,
 		    ARCHIVE_RAR5_SALT_SIZE, (unsigned)rounds + 16, hash_key,
@@ -150,6 +334,10 @@ __archive_rar5_derive_keys(const char *password, const uint8_t *salt,
 		    verification, sizeof(verification));
 		if (r != 0)
 			goto failed;
+	}
+
+fold_password_check:
+	if (password_check != NULL) {
 		memset(password_check, 0, ARCHIVE_RAR5_PASSWORD_CHECK_SIZE);
 		for (i = 0; i < sizeof(verification); i++)
 			password_check[i % ARCHIVE_RAR5_PASSWORD_CHECK_SIZE] ^=
@@ -168,6 +356,109 @@ failed:
 		    ARCHIVE_RAR5_PASSWORD_CHECK_SIZE);
 	__archive_cryptor_secure_zero(verification, sizeof(verification));
 	return (r);
+}
+
+int
+__archive_rar5_derive_keys_cached(struct archive_rar5_kdf_cache *cache,
+    const char *password, const uint8_t *salt, unsigned kdf_count,
+    uint8_t key[ARCHIVE_RAR5_KEY_SIZE],
+    uint8_t hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE],
+    uint8_t password_check[ARCHIVE_RAR5_PASSWORD_CHECK_SIZE])
+{
+	archive_sha256_ctx ctx;
+	struct archive_rar5_kdf_cache_entry *entry;
+	uint8_t password_tag[32], derived_key[ARCHIVE_RAR5_KEY_SIZE];
+	uint8_t derived_hash_key[ARCHIVE_RAR5_HASH_KEY_SIZE];
+	uint8_t derived_password_check[ARCHIVE_RAR5_PASSWORD_CHECK_SIZE];
+	uint8_t kdf_tag;
+	size_t i;
+	int r;
+
+	/* The caller owns this small cache for one archive reader and clears it
+	 * on cleanup, so derived keys never become global or cross threads. */
+	if (cache == NULL)
+		return (__archive_rar5_derive_keys(password, salt, kdf_count,
+		    key, hash_key, password_check));
+	if (password == NULL || salt == NULL || key == NULL)
+		return (-1);
+	kdf_tag = (uint8_t)kdf_count;
+	if (archive_sha256_init(&ctx) != ARCHIVE_OK)
+		return (__archive_rar5_derive_keys(password, salt, kdf_count,
+		    key, hash_key, password_check));
+	if (archive_sha256_update(&ctx, password, strlen(password)) !=
+	    ARCHIVE_OK || archive_sha256_update(&ctx, salt,
+	    ARCHIVE_RAR5_SALT_SIZE) != ARCHIVE_OK ||
+	    archive_sha256_update(&ctx, &kdf_tag, sizeof(kdf_tag)) !=
+	    ARCHIVE_OK) {
+		(void)archive_sha256_final(&ctx, password_tag);
+		__archive_cryptor_secure_zero(password_tag,
+		    sizeof(password_tag));
+		return (__archive_rar5_derive_keys(password, salt, kdf_count,
+		    key, hash_key, password_check));
+	}
+	if (archive_sha256_final(&ctx, password_tag) != ARCHIVE_OK) {
+		__archive_cryptor_secure_zero(password_tag,
+		    sizeof(password_tag));
+		return (__archive_rar5_derive_keys(password, salt, kdf_count,
+		    key, hash_key, password_check));
+	}
+	for (i = 0; i < ARCHIVE_RAR5_KDF_CACHE_SIZE; i++) {
+		entry = &cache->entries[i];
+		if (entry->valid && entry->kdf_count == kdf_count &&
+		    __archive_cryptor_constant_time_equal(entry->password_tag,
+		    password_tag, sizeof(password_tag)) &&
+		    __archive_cryptor_constant_time_equal(entry->salt, salt,
+		    ARCHIVE_RAR5_SALT_SIZE)) {
+			memcpy(key, entry->key, ARCHIVE_RAR5_KEY_SIZE);
+			if (hash_key != NULL)
+				memcpy(hash_key, entry->hash_key,
+				    ARCHIVE_RAR5_HASH_KEY_SIZE);
+			if (password_check != NULL)
+				memcpy(password_check, entry->password_check,
+				    ARCHIVE_RAR5_PASSWORD_CHECK_SIZE);
+			__archive_cryptor_secure_zero(password_tag,
+			    sizeof(password_tag));
+			return (0);
+		}
+	}
+	r = __archive_rar5_derive_keys(password, salt, kdf_count, derived_key,
+	    derived_hash_key, derived_password_check);
+	if (r != 0)
+		goto cleanup;
+	entry = &cache->entries[cache->next % ARCHIVE_RAR5_KDF_CACHE_SIZE];
+	cache->next++;
+	__archive_cryptor_secure_zero(entry, sizeof(*entry));
+	memcpy(entry->password_tag, password_tag,
+	    sizeof(entry->password_tag));
+	memcpy(entry->salt, salt, sizeof(entry->salt));
+	memcpy(entry->key, derived_key, sizeof(entry->key));
+	memcpy(entry->hash_key, derived_hash_key, sizeof(entry->hash_key));
+	memcpy(entry->password_check, derived_password_check,
+	    sizeof(entry->password_check));
+	entry->kdf_count = kdf_count;
+	entry->valid = 1;
+	memcpy(key, derived_key, ARCHIVE_RAR5_KEY_SIZE);
+	if (hash_key != NULL)
+		memcpy(hash_key, derived_hash_key, ARCHIVE_RAR5_HASH_KEY_SIZE);
+	if (password_check != NULL)
+		memcpy(password_check, derived_password_check,
+		    ARCHIVE_RAR5_PASSWORD_CHECK_SIZE);
+
+cleanup:
+	__archive_cryptor_secure_zero(password_tag, sizeof(password_tag));
+	__archive_cryptor_secure_zero(derived_key, sizeof(derived_key));
+	__archive_cryptor_secure_zero(derived_hash_key,
+	    sizeof(derived_hash_key));
+	__archive_cryptor_secure_zero(derived_password_check,
+	    sizeof(derived_password_check));
+	return (r);
+}
+
+void
+__archive_rar5_kdf_cache_clear(struct archive_rar5_kdf_cache *cache)
+{
+	if (cache != NULL)
+		__archive_cryptor_secure_zero(cache, sizeof(*cache));
 }
 
 int
